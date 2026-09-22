@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 from .config import LEGACY_HOME_MESSAGE, Paths, split_job_ref
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 APPLICATION_ID = 0x454E534F  # ENSO: distinguishes the new schema line from 0.1.x.
 
 _SCHEMA = """
@@ -35,7 +35,8 @@ CREATE TABLE _enso_secrets (name TEXT PRIMARY KEY, ciphertext BLOB NOT NULL);
 
 CREATE TABLE runs (
   id TEXT PRIMARY KEY, job TEXT NOT NULL, workspace TEXT NOT NULL,
-  provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
+  kind TEXT NOT NULL CHECK (kind IN ('agent', 'command', 'integration')),
+  provider TEXT, model TEXT, effort TEXT,
   trigger TEXT NOT NULL,
   started_at TEXT NOT NULL, ended_at TEXT, duration_ms INTEGER,
   status TEXT NOT NULL,
@@ -78,11 +79,19 @@ CREATE TABLE _enso_run_attempts (
   postrun_exit_code INTEGER, postrun_output TEXT NOT NULL, postrun_error TEXT NOT NULL,
   PRIMARY KEY (run_id, number));
 
+-- Group waiters share FIFO order across scheduler and manual-run processes.
+CREATE TABLE _enso_job_waiters (
+  sequence INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL UNIQUE, workspace TEXT NOT NULL, job TEXT NOT NULL,
+  group_name TEXT NOT NULL);
+CREATE INDEX _enso_job_waiters_group ON _enso_job_waiters (group_name, sequence);
+
 -- A trigger also protects deletes made through ordinary SQLite connections without
 -- changing foreign-key enforcement for existing user-authored tables.
 CREATE TRIGGER _enso_runs_delete_attempts AFTER DELETE ON runs
 BEGIN
   DELETE FROM _enso_run_attempts WHERE run_id = OLD.id;
+  DELETE FROM _enso_job_waiters WHERE run_id = OLD.id;
 END;
 
 -- Task history is append-only; tasks.py maintains its relationships.
@@ -464,7 +473,7 @@ class JobState:
     workspace: str
     job: str
     last_run: str | None = None  # local ISO timestamp of the last scheduled dispatch
-    failure_fingerprint: str | None = None  # the prerun or secrets failure last alerted on
+    failure_fingerprint: str | None = None  # the gate or secrets failure last alerted on
     failure_alerted_at: str | None = None
 
 
@@ -493,7 +502,7 @@ def set_last_run(paths: Paths, job: str, stamp: str) -> None:
 
 
 def set_failure(paths: Paths, job: str, fingerprint: str | None, alerted_at: str | None) -> None:
-    """Record the prerun failure that was alerted on (or clear it after a recovery)."""
+    """Record the gate failure that was alerted on (or clear it after a recovery)."""
     with transaction(paths) as con:
         con.execute(
             """INSERT INTO job_state (workspace, job, failure_fingerprint, failure_alerted_at)

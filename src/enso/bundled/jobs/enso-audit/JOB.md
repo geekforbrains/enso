@@ -1,11 +1,13 @@
 ---
 name: Enso audit
 schedule: "0 3 * * *"
-provider: "{{provider}}"
-model: "{{model}}"
-effort: "{{effort}}"
+agent:
+  provider: "{{provider}}"
+  model: "{{model}}"
+  effort: "{{effort}}"
 enabled: true
-prerun: prerun.sh
+gate:
+  command: bash prerun.sh
 catch_up: true
 ---
 
@@ -14,7 +16,7 @@ installation. `ok` says whether it is healthy; a report with `"ok": true` carrie
 problem at all, only findings worth a mention. The report:
 
 ```json
-{{prerun_output}}
+{{gate_output}}
 ```
 
 Write a short summary for the operator, who is probably reading it on a phone:

@@ -4,9 +4,9 @@
 # findings (unexpected entries, dangling links, world-readable credentials, stale files),
 # which are warnings and would otherwise never reach the operator. Plain `enso doctor`
 # keeps its ordinary meaning: exit 1 for a problem, 0 for warnings.
-# The prerun contract reads 0 and 1 the other way round, so this script inverts it:
+# The gate contract reads 0 and 1 the other way round, so this script inverts it:
 # doctor 0 -> exit 1 (no work, nothing spent or sent); doctor 1 -> the JSON report on
-# stdout and exit 0, so it lands in {{prerun_output}}; anything else is the doctor itself
+# stdout and exit 0, so it lands in {{gate_output}}; anything else is the doctor itself
 # failing (not on PATH, a crash) -> exit 2, alerted.
 # A crash exits 1 as well (Python's default for an uncaught exception), with a traceback on
 # stderr and nothing on stdout, so exit 1 opens the gate only when the JSON actually arrived.

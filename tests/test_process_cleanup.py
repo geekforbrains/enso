@@ -1,7 +1,9 @@
 """Cleanup must tolerate an exiting process without hiding live signal failures."""
 
 import asyncio
+import contextlib
 import errno
+import os
 import signal
 import subprocess
 import sys
@@ -199,3 +201,54 @@ async def test_cancellation_during_timeout_cleanup_still_reaps_process(tmp_path,
         await running
     assert stopped.is_set() and len(calls) == 2
     assert asyncio.all_tasks() <= baseline
+
+
+async def test_repeated_cancellation_still_kills_an_uncooperative_child(tmp_path, monkeypatch):
+    """A second stop cannot release ownership while SIGTERM grace is still running."""
+    pid_file = tmp_path / "child.pid"
+    terminating = asyncio.Event()
+    original = execution._signal_process_group
+
+    async def signal_group(process, pgid, sig, grace):
+        await original(process, pgid, sig, grace)
+        if sig == signal.SIGTERM:
+            terminating.set()
+
+    monkeypatch.setattr(execution, "_signal_process_group", signal_group)
+    running = asyncio.create_task(
+        execution.run_process(
+            [
+                sys.executable,
+                "-c",
+                (
+                    "import os, signal, time; from pathlib import Path; "
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                    f"Path({str(pid_file)!r}).write_text(str(os.getpid())); time.sleep(60)"
+                ),
+            ],
+            cwd=tmp_path,
+            env=dict(os.environ),
+            timeout=30,
+            merge_stderr=True,
+            label="uncooperative child",
+        )
+    )
+    pid = None
+    try:
+        async with asyncio.timeout(3):
+            while not pid_file.exists():
+                await asyncio.sleep(0.01)
+        pid = int(pid_file.read_text())
+        running.cancel()
+        await asyncio.wait_for(terminating.wait(), 3)
+        running.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await running
+        with pytest.raises(ProcessLookupError):
+            os.kill(pid, 0)
+    finally:
+        if pid is not None:
+            with contextlib.suppress(ProcessLookupError):
+                os.kill(pid, signal.SIGKILL)
+        running.cancel()
+        await asyncio.gather(running, return_exceptions=True)

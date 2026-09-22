@@ -157,7 +157,13 @@ async def _serve(
         for transport in transports
     ]
     scheduler = asyncio.create_task(
-        scheduling.minute_loop({"jobs": runner.tick, "heartbeat": heartbeat_runner.tick}),
+        scheduling.minute_loop(
+            {
+                "jobs": runner.tick,
+                "workflow": runner.maintenance_tick,
+                "heartbeat": heartbeat_runner.tick,
+            }
+        ),
         name="scheduler",
     )
     watcher = asyncio.create_task(

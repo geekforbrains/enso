@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime
+from typing import Literal
 
 import typer
 
@@ -71,14 +72,18 @@ def job_list(
     if not found and not problems:
         typer.echo("no jobs yet; run `enso job create`")
         return
-    rows = [["JOB", "SCHEDULE", "AGENT", "WORKSPACE", "ENABLED", "LAST RUN"]]
+    rows = [["JOB", "SCHEDULE", "EXECUTOR", "WORKSPACE", "ENABLED", "LAST RUN"]]
     for job in found:
         run = last.get(job.ref)
         rows.append(
             [
                 job.ref,
                 _schedule(job),
-                f"{job.provider}/{job.model}/{job.effort}",
+                (
+                    f"{job.agent.provider}/{job.agent.model}/{job.agent.effort}"
+                    if job.agent
+                    else jobs.execution_kind(job, config)
+                ),
                 job.workspace,
                 "yes" if job.enabled else "no",
                 f"{run.status} {ago(run.started_at)}" if run else "-",
@@ -92,21 +97,45 @@ def job_list(
 @job_app.command("create")
 def job_create(
     name: str = typer.Option(..., "--name", help="Display name; the directory is its slug."),
-    provider: str = typer.Option(..., "--provider"),
-    model: str = typer.Option(..., "--model"),
-    effort: str = typer.Option(..., "--effort"),
+    provider: str | None = typer.Option(
+        None, "--provider", help="Agent provider; requires model and effort."
+    ),
+    model: str | None = typer.Option(None, "--model", help="Agent model."),
+    effort: str | None = typer.Option(None, "--effort", help="Agent reasoning effort."),
+    command: str | None = typer.Option(
+        None, "--command", help="Shell command instead of an agent."
+    ),
+    group: str | None = typer.Option(
+        None, "--concurrency-group", help="Shared resource; requires --on-busy."
+    ),
+    on_busy: str | None = typer.Option(
+        None, "--on-busy", help="Required with a group: wait or skip."
+    ),
+    max_wait: int | None = typer.Option(
+        None, "--max-wait", help="Maximum wait in seconds; only with --on-busy wait."
+    ),
     schedule: str | None = typer.Option(
         None, "--schedule", help="Cron, local time, e.g. '0 9 * * *'; optional with --stage."
     ),
     workspace: str | None = typer.Option(None, "--workspace", help="Defaults to ENSO_WORKSPACE."),
     project: str | None = typer.Option(None, "--project", help="Serve a task board project."),
-    stage: str | None = typer.Option(None, "--stage", help="The project's agent stage to serve."),
+    stage: str | None = typer.Option(
+        None, "--stage", help="The project stage to serve; PROJECT.md owns command stages."
+    ),
     as_json: bool = JSON_FLAG,
 ) -> None:
     """Scaffold a disabled JOB.md; edit the prompt, test with `job run`, then enable it."""
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
     try:
+        concurrency = None
+        if group is not None or on_busy is not None or max_wait is not None:
+            if group is None or on_busy is None:
+                raise ValueError("--concurrency-group and --on-busy are required together")
+            if on_busy not in ("wait", "skip"):
+                raise ValueError("--on-busy must be wait or skip")
+            policy: Literal["wait", "skip"] = "wait" if on_busy == "wait" else "skip"
+            concurrency = jobs.JobConcurrency(group, policy, max_wait)
         job = jobs.create_job(
             paths,
             config,
@@ -114,6 +143,8 @@ def job_create(
             provider=provider,
             model=model,
             effort=effort,
+            command=command,
+            concurrency=concurrency,
             schedule=schedule,
             workspace=resolve_workspace(paths, workspace),
             project=project,
@@ -175,11 +206,11 @@ def job_run(
         echo_json(result.as_dict())
     elif result.status == "no_work":
         reason = (
-            "prerun exited 1"
+            "gate exited 1"
             if result.exit_code == 1
             else f"no task is ready in {job.project}/{job.stage}"
         )
-        typer.echo(f"no work ({reason}); the provider was not run")
+        typer.echo(f"no work ({reason}); execution did not start")
     elif result.status == "skipped":
         typer.echo(f"skipped: {result.error}")
     else:
@@ -259,7 +290,11 @@ def runs_show(run_id: str, as_json: bool = JSON_FLAG) -> None:
     if run.output:
         typer.echo(f"\n{run.output}")
     for attempt in attempts:
-        label = f"Attempt {attempt.number}" if attempt.number else "Postrun without a provider turn"
+        label = (
+            f"Attempt {attempt.number}"
+            if attempt.number
+            else "Postrun without an execution attempt"
+        )
         typer.echo(f"\n{label}: {attempt.status}")
         for key, value in attempt.as_dict().items():
             if key not in (

@@ -51,13 +51,15 @@ def _change(paths: Paths, path: Path, after: bytes) -> Change:
 
 
 def _job_text(path: Path, fields: dict[str, Any], prompt: str, config: Config) -> bytes:
-    complete = {
-        "schedule": None,
-        "provider": "command",
-        "model": "command",
-        "effort": "none",
-        **fields,
-    }
+    complete = {"schedule": None, **fields}
+    for key, cls in (
+        ("agent", jobs.JobAgent),
+        ("gate", jobs.JobHook),
+        ("postrun", jobs.JobHook),
+        ("concurrency", jobs.JobConcurrency),
+    ):
+        if key in complete:
+            complete[key] = cls(**complete[key])
     job = jobs.Job(
         dir_name=path.parent.name,
         workspace=path.parents[2].name,
@@ -149,12 +151,8 @@ def _plan(
         fields.pop("stage", None)
         fields.setdefault("schedule", "0 0 1 1 *")
         # Archived command-stage jobs become inert, valid periodic records.
-        if job.provider == "command":
-            fields.update(
-                provider=config.defaults.provider,
-                model=config.defaults.model,
-                effort=config.defaults.effort,
-            )
+        if jobs.command_stage(job, config):
+            fields["command"] = ":"
         changes[job.path] = _change(
             paths,
             job.path,
@@ -177,7 +175,11 @@ def _plan(
         if name != "integrate":
             workspace = config.workspaces.get(project.workspace)
             agent = workspace.agent if workspace and workspace.agent else config.defaults
-            fields.update(provider=agent.provider, model=agent.model, effort=agent.effort)
+            fields["agent"] = {
+                "provider": agent.provider,
+                "model": agent.model,
+                "effort": agent.effort,
+            }
         changes[path] = _change(paths, path, _job_text(path, fields, prompts[name], changed))
         targets.append(str(path))
     project_path = paths.project(project.workspace, key) / "PROJECT.md"

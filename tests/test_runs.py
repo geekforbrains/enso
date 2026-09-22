@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 from conftest import load_job, write_job
@@ -115,7 +116,7 @@ def test_run_lifecycle_and_retention(enso_home: Paths, config: Config) -> None:
     assert run.duration_ms is not None
     assert run.duration_ms <= int((after - before).total_seconds() * 1000)
 
-    second = runs.start(enso_home, job, "schedule", effort=job.effort)
+    second = runs.start(enso_home, job, "schedule", effort=job.agent.effort)
     with db.transaction(enso_home) as con:  # a clock step backwards must not go negative
         future = (datetime.now(UTC) + timedelta(seconds=10)).isoformat(timespec="microseconds")
         con.execute("UPDATE runs SET started_at = ? WHERE id = ?", (future, second))
@@ -129,7 +130,7 @@ def test_run_lifecycle_and_retention(enso_home: Paths, config: Config) -> None:
     assert runs.latest(enso_home)["default:nightly"].id == second
     assert runs.get(enso_home, "nope") is None
 
-    running = runs.start(enso_home, job, "schedule", effort=job.effort)
+    running = runs.start(enso_home, job, "schedule", effort=job.agent.effort)
     assert runs.prune(enso_home, keep=1, max_age_days=30) == 1
     assert {r.id for r in runs.list_runs(enso_home)} == {second, running}
     with db.transaction(enso_home) as con:
@@ -168,3 +169,43 @@ def test_prefix_lookup_treats_wildcards_as_literal(enso_home: Paths, config: Con
     assert runs.get(enso_home, "abcdef") is None  # still ambiguous
     run = runs.get(enso_home, "abcdef0")
     assert run is not None and run.id == "abcdef012345"
+
+
+def test_command_and_integration_history_has_no_synthetic_agent(enso_home, config):
+    db.initialize(enso_home)
+    write_job(enso_home)
+    agent_job = load_job(enso_home, config)
+    command = replace(agent_job, agent=None, command="printf done")
+    for kind in ("command", "integration"):
+        run_id = runs.start(enso_home, command, "manual", effort=None, kind=kind)
+        runs.finish(enso_home, run_id, status="ok", exit_code=0, output="done")
+        saved = runs.get(enso_home, run_id)
+        assert saved.kind == kind
+        assert (saved.provider, saved.model, saved.effort) == (None, None, None)
+        summary = runs.latest_summaries(enso_home)[command.ref]
+        assert summary.kind == kind and summary.provider is None
+    implicit = runs.start(enso_home, command, "manual", effort=None)
+    assert runs.get(enso_home, implicit).kind == "command"
+    agent = runs.start(enso_home, agent_job, "manual", effort="low")
+    saved = runs.get(enso_home, agent)
+    assert (saved.kind, saved.provider, saved.effort) == ("agent", "claude", "low")
+
+
+def test_retention_preserves_waiting_runs_and_removes_waiters_with_history(enso_home, config):
+    db.initialize(enso_home)
+    write_job(enso_home)
+    run_id = runs.start(enso_home, load_job(enso_home, config), "manual", effort="high")
+    with db.transaction(enso_home) as connection:
+        connection.execute(
+            "INSERT INTO _enso_job_waiters (run_id, workspace, job, group_name) "
+            "VALUES (?, 'default', 'nightly', 'reporting')",
+            (run_id,),
+        )
+        connection.execute("UPDATE runs SET started_at = '2020-01-01T00:00:00+00:00'")
+    assert runs.prune(enso_home, keep=0, max_age_days=0) == 0
+    with db.reader(enso_home) as connection:
+        assert connection.execute("SELECT count(*) FROM _enso_job_waiters").fetchone()[0] == 1
+    runs.finish(enso_home, run_id, status="skipped")
+    assert runs.prune(enso_home, keep=0, max_age_days=0) == 1
+    with db.reader(enso_home) as connection:
+        assert connection.execute("SELECT count(*) FROM _enso_job_waiters").fetchone()[0] == 0

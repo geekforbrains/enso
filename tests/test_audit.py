@@ -404,7 +404,7 @@ def test_audit_finds_engine_stage_jobs_with_config(
     stage_without_config, ordinary_without_config = audit.audit(
         enso_home, ["stage-only", "ordinary"], user_dirs=USER_DIRS
     ).workspaces
-    assert stage_without_config.jobs == []
+    assert stage_without_config.jobs == ["stage-only:run"]
     assert ordinary_without_config.jobs == ["ordinary:nightly"]
     assert [finding.check for finding in stage_without_config.findings] == ["agents-md"]
 

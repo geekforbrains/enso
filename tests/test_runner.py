@@ -26,7 +26,7 @@ from conftest import (
     write_workspace,
 )
 
-from enso import db, messages, runs
+from enso import db, messages, runs, secrets
 from enso.config import Config, Paths, parse_config
 from enso.execution import NOTIFY_LIMIT, ProviderTurn
 from enso.jobs import Job
@@ -91,6 +91,151 @@ def recorded(nightly: Job) -> tuple[str, dict[str, str]]:
     seen = (nightly.job_dir / "seen.txt").read_text()
     lines = (nightly.job_dir / "env.txt").read_text().splitlines()
     return seen, dict(line.split("=", 1) for line in lines)
+
+
+@pytest.mark.parametrize(
+    ("command", "status", "exit_code"),
+    [
+        ("printf result", "ok", 0),
+        ("printf result; exit 1", "error", 1),
+        ("printf result; sleep 5", "timeout", None),
+    ],
+)
+async def test_command_jobs_record_real_outcomes_and_always_check(
+    runner, enso_home, fake_config, monkeypatch, command, status, exit_code
+):
+    def no_provider(*args, **kwargs):
+        pytest.fail("command jobs must never construct a provider")
+
+    monkeypatch.setattr(runner_module, "make_provider", no_provider)
+    nightly = job(
+        enso_home,
+        fake_config,
+        command=command,
+        prompt="Documentation, never a prompt",
+        timeout=1,
+        postrun={"command": RECORDER},
+    )
+    result = await runner.run(nightly, trigger="manual")
+    assert result.status == status
+    if exit_code is not None:
+        assert result.exit_code == exit_code
+    seen, env = recorded(nightly)
+    assert seen == "result"
+    assert env["ENSO_RUN_STATUS"] == status
+    assert env["ENSO_RUN_ATTEMPT"] == "1"
+    row = runs.get(enso_home, result.run_id)
+    assert (row.kind, row.provider, row.model, row.effort) == ("command", None, None, None)
+    (attempt,) = runs.attempts(enso_home, result.run_id)
+    assert attempt.status == status and attempt.postrun_exit_code == 0
+
+
+async def test_command_job_receives_its_directory_and_declared_secrets(
+    runner, enso_home, fake_config
+):
+    secrets.add(enso_home, "COMMAND_TOKEN", "synthetic-token")
+    nightly = job(
+        enso_home,
+        fake_config,
+        command='printf "%s|%s|%s" "$PWD" "$COMMAND_TOKEN" "$ENSO_JOB"',
+        secrets=["COMMAND_TOKEN"],
+    )
+    result = await runner.run(nightly, trigger="manual")
+    assert result.status == "ok"
+    assert result.output == f"{nightly.job_dir}|synthetic-token|default:nightly"
+
+
+async def test_command_postrun_cannot_request_an_agent(runner, enso_home, fake_config):
+    nightly = job(
+        enso_home,
+        fake_config,
+        command="true",
+        postrun={"command": "echo repair; exit 10"},
+    )
+    result = await runner.run(nightly, trigger="manual")
+    assert result.status == "error" and "command job" in result.postrun_error
+    assert len(runs.attempts(enso_home, result.run_id)) == 1
+
+
+async def test_group_wait_does_not_consume_execution_timeout(runner, enso_home, fake_config):
+    nightly = job(
+        enso_home,
+        fake_config,
+        command="echo started",
+        timeout=1,
+        concurrency={"group": "shared", "on_busy": "wait"},
+    )
+    held = acquire_group_lock(enso_home, "shared")
+    assert held is not None
+    running = runner.start(nightly, trigger="manual")
+    try:
+        await asyncio.sleep(1.1)
+        assert not running.done()
+        duplicate = await runner.run(nightly, trigger="manual")
+        assert duplicate.status == "skipped" and duplicate.run_id is None
+    finally:
+        held.close()
+    result = await asyncio.wait_for(running, 3)
+    assert result.status == "ok" and result.output == "started\n"
+    assert len(runs.list_runs(enso_home)) == 1
+
+
+async def test_definition_changed_while_queued_is_skipped(runner, enso_home, fake_config):
+    nightly = job(
+        enso_home,
+        fake_config,
+        command="touch should-not-exist",
+        concurrency={"group": "shared", "on_busy": "wait"},
+    )
+    held = acquire_group_lock(enso_home, "shared")
+    assert held is not None
+    running = runner.start(nightly, trigger="manual")
+    try:
+        async with asyncio.timeout(3):
+            while not runs.list_runs(enso_home):
+                await asyncio.sleep(0.01)
+        nightly.path.write_text(nightly.path.read_text().replace("enabled: true", "enabled: false"))
+    finally:
+        held.close()
+    result = await asyncio.wait_for(running, 3)
+    assert result.status == "skipped" and "changed" in result.error
+    assert not (nightly.job_dir / "should-not-exist").exists()
+
+
+async def test_slow_lifecycle_hook_does_not_block_job_dispatch(
+    runner, enso_home, fake_config, monkeypatch
+):
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def slow_hooks(*args, **kwargs):
+        entered.set()
+        await finish.wait()
+
+    monkeypatch.setattr(runner_module.workflows, "drain_events", slow_hooks)
+    nightly = job(enso_home, fake_config, command="echo dispatched", schedule="* * * * *")
+    db.set_last_run(enso_home, nightly.ref, "2026-09-01T08:59:00+00:00")
+    lifecycle = asyncio.create_task(runner.maintenance_tick(NOW))
+    try:
+        await asyncio.wait_for(entered.wait(), 2)
+        await asyncio.wait_for(runner.tick(NOW), 2)
+        result = await asyncio.wait_for(runner._running[nightly.ref], 2)
+        assert result.status == "ok"
+        assert result.output == "dispatched\n"
+        assert not lifecycle.done()
+    finally:
+        finish.set()
+        await lifecycle
+
+
+async def test_invalid_schedule_cannot_starve_other_jobs(runner, enso_home, fake_config):
+    write_job(enso_home, "a-broken", schedule="0 0 31 2 *")
+    nightly = job(enso_home, fake_config, command="echo dispatched", schedule="* * * * *")
+    db.set_last_run(enso_home, nightly.ref, "2026-09-01T08:59:00+00:00")
+    await runner.tick(NOW)
+    result = await runner._running[nightly.ref]
+    assert result.status == "ok"
+    assert runner._problems["default:a-broken"]
 
 
 async def test_manual_run_records_the_run_and_stays_quiet(
@@ -225,13 +370,13 @@ async def test_opencode_job_extracts_the_answer_from_jsonl(
         ("exit 1", "no_work", "", False),
         (
             "echo 'ENSO_ERROR: feed down' >&2; echo scraped; exit 2",
-            "prerun_error",
+            "gate_error",
             "feed down",
             False,
         ),
-        ("exit 3", "prerun_error", "prerun exited with status 3", False),
-        ("sleep 5", "prerun_error", "prerun timed out after 1s", False),
-        (None, "prerun_error", "prerun script not found: prerun.sh", False),
+        ("exit 3", "gate_error", "gate exited with status 3", False),
+        ("sleep 5", "gate_error", "gate timed out after 1s", False),
+        (None, "gate_error", "gate exited with status 127", False),
     ],
 )
 async def test_prerun_contract(
@@ -273,7 +418,7 @@ async def test_provider_failure_and_timeout(
     )
     assert (late.status, late.error, late.output) == (
         "timeout",
-        "timed out after 1s",
+        "timed out after 1s of provider runtime",
         "batch: working",
     )
 
@@ -301,7 +446,7 @@ async def test_postrun_gets_the_output_on_stdin_and_the_outcome_in_env(
         ("echo 'ENSO_ERROR: archive full' >&2; exit 2", "archive full"),
         ("exit 4", "postrun exited with status 4"),
         ("sleep 5", "postrun timed out after 1s"),
-        (None, "postrun script not found: postrun.sh"),
+        (None, "postrun exited with status 127"),
     ],
 )
 async def test_failing_postrun_marks_the_run_failed_and_alerts_once(
@@ -446,7 +591,7 @@ async def test_invalid_postrun_feedback_fails_without_resuming(
     assert attempt.postrun_exit_code == 10 and attempt.postrun_error == result.postrun_error
 
 
-@pytest.mark.parametrize(("gate", "status"), [("exit 1", "error"), ("exit 2", "prerun_error")])
+@pytest.mark.parametrize(("gate", "status"), [("exit 1", "error"), ("exit 2", "gate_error")])
 async def test_postrun_cannot_open_a_closed_prerun_gate(
     runner: JobRunner, enso_home: Paths, fake_config: Config, gate: str, status: str
 ) -> None:
@@ -539,11 +684,11 @@ async def test_postrun_keeps_both_locks_and_run_row_until_followups_finish(
     proceed = asyncio.Event()
     hook = runner._postrun
 
-    async def pause_check(job, result, duration_ms, *, attempt):
+    async def pause_check(job, result, duration_ms, *, attempt, followups_used=0):
         if attempt == 1:
             checking.set()
             await proceed.wait()
-        return await hook(job, result, duration_ms, attempt=attempt)
+        return await hook(job, result, duration_ms, attempt=attempt, followups_used=followups_used)
 
     monkeypatch.setattr(runner, "_postrun", pause_check)
     nightly = job(
@@ -766,9 +911,9 @@ def test_recover_closes_orphaned_rows_only(
     nightly = job(enso_home, fake_config)
     write_job(enso_home, "other")
     other = load_job(enso_home, fake_config, "other")
-    orphan = runs.start(enso_home, nightly, "schedule", effort=nightly.effort)
-    live = runs.start(enso_home, other, "manual", effort=other.effort)
-    gone = runs.start(enso_home, other, "manual", effort=other.effort)
+    orphan = runs.start(enso_home, nightly, "schedule", effort="high")
+    live = runs.start(enso_home, other, "manual", effort="high")
+    gone = runs.start(enso_home, other, "manual", effort="high")
     with db.transaction(enso_home) as con:  # its job directory was deleted since
         con.execute("UPDATE runs SET job = 'gone' WHERE id = ?", (gone,))
     held = acquire_lock(enso_home, other.ref)  # an ``enso job run`` in another process
@@ -895,17 +1040,17 @@ async def test_scheduled_alerts_suppress_repeats_and_recover(
     nightly = job(enso_home, fake_config, script=broken, prerun="prerun.sh")
     await runner.run(nightly, trigger="schedule")
     await runner.run(nightly, trigger="schedule")
-    assert transport.sent == [("C1", "⚠️ [default:nightly] prerun failed\nfeed down")]
+    assert transport.sent == [("C1", "⚠️ [default:nightly] gate failed\nfeed down")]
     assert messages.list_messages(enso_home, 1)[0].workspace == nightly.workspace
     (nightly.job_dir / "prerun.sh").write_text("exit 3")
     await runner.run(nightly, trigger="schedule")
     assert transport.sent[-1] == (
         "C1",
-        "⚠️ [default:nightly] prerun failed\nprerun exited with status 3",
+        "⚠️ [default:nightly] gate failed\ngate exited with status 3",
     )
     (nightly.job_dir / "prerun.sh").write_text("exit 1")
     await runner.run(nightly, trigger="schedule")
-    assert transport.sent[-1] == ("C1", "✅ [default:nightly] prerun recovered")
+    assert transport.sent[-1] == ("C1", "✅ [default:nightly] gate recovered")
     assert db.job_state(enso_home, "default:nightly").failure_fingerprint is None
     await runner.run(nightly, trigger="schedule")
     assert len(transport.sent) == 3

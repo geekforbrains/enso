@@ -999,6 +999,17 @@ def claimed_by(paths: Paths, run_id: str) -> list[Task]:
     return [_task(row) for row in rows]
 
 
+def orphaned_job_claims(paths: Paths) -> list[Task]:
+    """Claims whose job row finished or disappeared; callers must verify the job lock."""
+    with db.reader(paths) as con:
+        rows = con.execute(
+            """SELECT t.* FROM _enso_tasks t LEFT JOIN runs r ON r.id = t.claim_run_id
+               WHERE t.claim_run_id IS NOT NULL AND t.claim_actor LIKE 'job:%'
+                 AND (r.id IS NULL OR r.status != 'running') ORDER BY t.number"""
+        ).fetchall()
+    return [_task(row) for row in rows]
+
+
 def ready(paths: Paths, config: Config, project: str, stage: str) -> bool:
     """Whether ``take`` would find something; the scheduler asks this every tick."""
     key = project.strip().upper()

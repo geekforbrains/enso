@@ -178,7 +178,7 @@ def _provider_directory(path: str) -> str | None:
 def environment(paths: Paths, config: Config | None, binary: str) -> dict[str, str]:
     """PATH covering enso, every provider CLI, and the installing shell; the home when not default.
 
-    The shell's PATH comes along because prerun scripts and provider tools resolve
+    The shell's PATH comes along because job hooks and provider tools resolve
     ``python3``, keyring helpers, and the like exactly as they did when the operator
     tested them by hand.
     """

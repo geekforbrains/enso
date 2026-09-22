@@ -18,7 +18,7 @@
     <dt>Run</dt><dd><code>{{ run.id }}</code></dd>
     <dt>Job</dt><dd><a href="/jobs/{{ run.job|urlencode }}">{{ run.job }}</a></dd>
     <dt>Workspace</dt><dd><a href="/workspaces/{{ run.workspace|urlencode }}">{{ run.workspace }}</a></dd>
-    {% if engine %}<dt>Execution</dt><dd>Enso engine · no model</dd>{% else %}<dt>Agent</dt><dd><span class="chip">{{ run.provider }}</span> <span class="chip">{{ run.model }}</span> <span class="chip">{{ run.effort }}</span></dd>{% endif %}
+    {% if run.kind != 'agent' %}<dt>Execution</dt><dd>{{ 'Integration' if run.kind == 'integration' else 'Command' }} · no model</dd>{% else %}<dt>Agent</dt><dd><span class="chip">{{ run.provider }}</span> <span class="chip">{{ run.model }}</span> <span class="chip">{{ run.effort }}</span></dd>{% endif %}
     <dt>Trigger</dt><dd>{{ run.trigger }}</dd>
     {% if tasks %}
     <dt>Task</dt>
@@ -28,7 +28,7 @@
     <dt>Ended</dt><dd>{% if run.ended_at %}<time datetime="{{ run.ended_at|iso }}">{{ run.ended_at|when }}</time>{% else %}-{% endif %}</dd>
     <dt>Duration</dt>
     <dd>{{ run.duration_ms|duration }} <span class="muted">including hooks</span></dd>
-    {% if timeout %}<dt>{{ 'Execution timeout' if engine else 'Provider time budget' }}</dt><dd>{{ timeout }}s{% if not engine %} across all turns{% endif %}</dd>{% endif %}
+    {% if timeout %}<dt>{{ 'Execution timeout' if run.kind != 'agent' else 'Provider time budget' }}</dt><dd>{{ timeout }}s{% if run.kind == 'agent' %} across all turns{% endif %}</dd>{% endif %}
     <dt>Exit code</dt><dd>{{ run.exit_code if run.exit_code is not none else '-' }}</dd>
     <dt>Session</dt><dd>{% if run.session_id %}<code>{{ run.session_id }}</code>{% else %}-{% endif %}</dd>
   </dl>
@@ -51,7 +51,7 @@
 
 <div class="shead">
   <h2>Output</h2>
-  {% if run.output %}<span class="right wide-only">{{ run.output|length }} characters · the final 1 MiB the provider printed</span>{% endif %}
+  {% if run.output %}<span class="right wide-only">{{ run.output|length }} characters · the final 1 MiB of execution output</span>{% endif %}
 </div>
 <div class="panel">
   {% if run.output %}
@@ -64,7 +64,7 @@
 <div class="shead"><h2>Attempts</h2><span class="right">Completed turns and postrun checks</span></div>
 {% for attempt in attempts %}
 <details class="panel">
-  <summary>{% if attempt.number %}Attempt {{ attempt.number }}{% else %}Postrun without a provider turn{% endif %} · {{ attempt.status }}</summary>
+  <summary>{% if attempt.number %}Attempt {{ attempt.number }}{% else %}Postrun without an execution attempt{% endif %} · {{ attempt.status }}</summary>
   <dl class="kv">
     <dt>Exit code</dt><dd>{{ attempt.exit_code if attempt.exit_code is not none else '-' }}</dd>
     <dt>Duration</dt><dd>{{ attempt.duration_ms|duration }}</dd>

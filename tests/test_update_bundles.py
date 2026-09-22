@@ -21,8 +21,8 @@ def bundle_home(enso_home, tmp_path, monkeypatch):
         "skills/enso/SKILL.md": "Core skill one\n",
         "jobs/enso-audit/JOB.md": (
             "---\nname: enso-audit\nenabled: true\nschedule: '0 3 * * *'\n"
-            'provider: "{{provider}}"\nmodel: "{{model}}"\n'
-            'effort: "{{effort}}"\n---\nAudit prompt one\n'
+            'agent:\n  provider: "{{provider}}"\n  model: "{{model}}"\n'
+            '  effort: "{{effort}}"\n---\nAudit prompt one\n'
         ),
         "jobs/enso-audit/prerun.sh": "#!/bin/sh\nprintf old\n",
     }

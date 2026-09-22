@@ -29,7 +29,7 @@
     {% if total %}Showing {{ start }}–{{ end }} of {{ total }} run{{ 's' if total != 1 }}{% if job or status %} matching the filter{% endif %}.{% else %}No runs{% if job or status %} match the filter{% endif %}.{% endif %}
     {% if status %} Runs with status {{ status|status_word }}; the status filter overrides the view and folds consecutive quiet runs.
     {% elif view == 'signal' %} No-work polls and skipped runs are left out; the All view keeps them, folded.
-    {% elif view == 'failed' %} Errors, timeouts, prerun failures, and cancelled assessments.
+    {% elif view == 'failed' %} Errors, timeouts, gate failures, and cancelled assessments.
     {% else %} Consecutive no-work and skipped runs are folded.{% endif %}
     {% if pages > 1 %} Page {{ page }} of {{ pages }} ({{ page_size }} per page).{% endif %}
   </p>

@@ -16,6 +16,10 @@ Put executable acceptance requirements in stage checks, agent instructions in th
 job, and reactions to accepted moves in lifecycle hooks. Do not invent a command or replace
 a missing check with a command that always succeeds.
 
+Stage `JOB.md` files use the `enso-jobs` format: agent stages declare a nested `agent` block;
+command/integration stages omit both `agent` and `command` because `PROJECT.md` owns their
+execution. Job `gate` and `postrun` blocks name explicit commands and optional timeouts.
+
 ## Checks and integration
 
 A required check passes only when its command exits successfully. A successful agent reply
@@ -34,7 +38,10 @@ worktree root deliberately; changing the configuration does not relocate or reta
 existing task.
 
 Worktrees isolate files, not ports, processes, credentials, databases, or services. Give
-shared resources an explicit concurrency limit and make setup safe to retry. Do not remove
+shared resources a job `concurrency` group with an explicit `on_busy: wait` or `on_busy: skip`;
+there is no default policy. Project `max_concurrency` separately limits task executions.
+The job group protects execution and checks, not its gate, which runs first. Make setup safe
+to retry. Do not remove
 retained task directories or branches to hide a cleanup failure.
 
 ## Lifecycle hooks

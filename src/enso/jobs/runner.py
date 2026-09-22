@@ -7,6 +7,7 @@ import hashlib
 import logging
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from typing import IO, Literal
@@ -25,7 +26,8 @@ from ..execution import alert_text, enso_error
 from ..locks import acquire_file_lock
 from ..providers import make_provider
 from ..transports import Transport
-from . import Job, _job_path, command_stage, load_jobs, parse_job, taskflow
+from . import Job, _job_path, concurrency, execution_kind, load_jobs, parse_job, taskflow
+from .concurrency import acquire_group_lock as acquire_group_lock
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +42,7 @@ Decision = Literal["first", "wait", "fire", "misfire"]
 class RunResult:
     """How one trigger ended; a per-job lock collision never creates a run row."""
 
-    status: Literal["ok", "error", "timeout", "no_work", "prerun_error", "skipped"]
+    status: Literal["ok", "error", "timeout", "no_work", "gate_error", "skipped"]
     run_id: str | None = None
     output: str = ""
     error: str = ""
@@ -54,7 +56,7 @@ class RunResult:
 
 
 @dataclass(frozen=True)
-class Prerun:
+class Gate:
     outcome: Literal["open", "no_work", "error"]
     output: str = ""
     diagnostic: str = ""
@@ -98,20 +100,10 @@ def acquire_lock(paths: Paths, ref: str) -> IO[str] | None:
     return acquire_file_lock(paths.lock("jobs", *split_job_ref(ref)))
 
 
-def acquire_group_lock(paths: Paths, group: str) -> IO[str] | None:
-    """Take a shared execution lock, or None when another group member owns it.
-
-    File locks are released by the operating system if Enso or its host process dies, unlike
-    a database flag that would need expiry and recovery rules.  The filename is a digest so a
-    user-authored group name can never escape the lock directory.
-    """
-    return acquire_file_lock(paths.lock("groups", hashlib.sha256(group.encode()).hexdigest()))
-
-
 def acquire_project_slot(paths: Paths, project: str, limit: int) -> IO[str] | None:
     """Reserve one project execution slot across schedulers and manual job processes."""
     for number in range(limit):
-        lock = acquire_group_lock(paths, f"project:{project}:slot:{number}")
+        lock = acquire_file_lock(paths.lock("project-slots", project, str(number)))
         if lock is not None:
             return lock
     return None
@@ -143,7 +135,6 @@ class JobRunner:
         if paused(self.paths):
             return
         config = await asyncio.to_thread(self._live.current)
-        await workflows.drain_events(self.paths, config)
         jobs, problems = await asyncio.to_thread(load_jobs, self.paths, config)
         if problems != self._problems:
             for name, found in problems.items():
@@ -162,7 +153,11 @@ class JobRunner:
                     self.start(job, trigger="ready", config=config)
                 continue
             state = states.get(job.ref)
-            decision = decide(job, _parse_stamp(state.last_run if state else None), now)
+            try:
+                decision = decide(job, _parse_stamp(state.last_run if state else None), now)
+            except (ValueError, OverflowError) as exc:
+                log.warning("%s: could not determine next slot: %s", job.ref, exc)
+                continue
             log.debug("%s: %s", job.ref, decision)
             if decision == "wait":
                 continue
@@ -178,6 +173,15 @@ class JobRunner:
                     log.debug("%s: slot passed but no task is ready", job.ref)
                     continue
                 self.start(job, trigger="schedule", config=config)
+
+    async def maintenance_tick(self, now: datetime) -> None:
+        """Deliver lifecycle reactions and sweep independently of job dispatch."""
+        from ..maintenance import paused
+
+        if paused(self.paths):
+            return
+        config = await asyncio.to_thread(self._live.current)
+        await workflows.drain_events(self.paths, config)
         for key, project in config.projects.items():
             if project.repo is not None:
                 await self._sweep(key, config)
@@ -233,16 +237,27 @@ class JobRunner:
                 # The row belongs to an ``enso job run`` still holding the per-job
                 # lock in another process (§3.9); it will close its own row.
                 continue
-            lock.close()
-            # An owner that closes its row between the listing and here keeps its outcome.
-            if runs.abandon(self.paths, run.id, INTERRUPTED_ERROR):
-                closed += 1
-                # The run can no longer hand off, so the claims it took would stay forever
-                # and the task would never be ready again; let them go like any run that
-                # ended without a handoff.
-                message = f"run {run.id} ended ({INTERRUPTED_ERROR}) without a handoff"
-                for ref in taskflow.release_orphans(self.paths, self.config, run.id, message):
-                    log.warning("run=%s released %s: %s", run.id, ref, INTERRUPTED_ERROR)
+            try:
+                if runs.abandon(self.paths, run.id, INTERRUPTED_ERROR):
+                    closed += 1
+                    message = f"run {run.id} ended ({INTERRUPTED_ERROR}) without a handoff"
+                    for ref in taskflow.release_orphans(self.paths, self.config, run.id, message):
+                        log.warning("run=%s released %s: %s", run.id, ref, INTERRUPTED_ERROR)
+            finally:
+                lock.close()
+        # An older process may have closed its row before releasing its task claim.
+        # Reconcile these independently, including when retention removed the old row.
+        for task in tasks.orphaned_job_claims(self.paths):
+            assert task.claim_actor is not None and task.claim_run_id is not None
+            lock = acquire_lock(self.paths, task.claim_actor.removeprefix("job:"))
+            if lock is None:
+                continue
+            try:
+                taskflow.release_orphans(
+                    self.paths, self.config, task.claim_run_id, INTERRUPTED_ERROR
+                )
+            finally:
+                lock.close()
         return closed
 
     # -- One run --
@@ -253,9 +268,7 @@ class JobRunner:
 
         if paused(self.paths):
             return "Enso is paused for maintenance"
-        if job.stage is None:
-            return ""
-        if config.source_hash is not None:
+        if job.stage is not None and config.source_hash is not None:
             fresh, _, _ = check_config(self.paths)
             if (
                 fresh is None
@@ -265,14 +278,13 @@ class JobRunner:
                 return (
                     "project configuration changed before the stage run started; trigger it again"
                 )
-        if job.path.exists():
-            current, problems = parse_job(job.path, config)
-            if problems or current != job:
-                return "stage job definition changed before the run started; trigger it again"
+        current, problems = parse_job(job.path, config)
+        if problems or current != job:
+            return "job definition changed before execution; trigger it again"
         return ""
 
     async def run(self, job: Job, *, trigger: str, config: Config | None = None) -> RunResult:
-        """Lock, prerun, provider, run row, postrun; scheduled runs also alert.
+        """Lock, gate, provider, run row, postrun; scheduled runs also alert.
 
         ``config`` is the snapshot the whole run reads: the one its tick loaded, else the
         one this runner was built with, which is what validated ``job``.
@@ -283,7 +295,7 @@ class JobRunner:
                     raise ValueError("job path does not match its owning workspace")
             except ValueError as exc:
                 return RunResult("skipped", error=str(exc))
-            lock = await asyncio.to_thread(acquire_lock, self.paths, job.ref)
+            lock = await self._lock(acquire_lock, self.paths, job.ref)
             if lock is None:
                 log.info("already running (lock held); skipping this trigger")
                 return RunResult("skipped", error="already running")
@@ -300,30 +312,54 @@ class JobRunner:
                 # slot from and hide a slot it outlived from the misfire check.
                 lock.close()
 
-    async def _run_locked(self, job: Job, trigger: str, config: Config) -> RunResult:
-        # Clamped once here so the run row and the provider command cannot disagree.
-        effort = (
-            job.effort
-            if command_stage(job, config)
-            else routing.clamp_effort(job.provider, job.model, job.effort)
+    async def _lock(self, function: Callable[..., IO[str] | None], *args: object) -> IO[str] | None:
+        worker = asyncio.create_task(asyncio.to_thread(function, *args))
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            lock = await execution.finish_cleanup(worker)
+            if lock is not None:
+                lock.close()
+            raise
+
+    async def _open_run(
+        self, job: Job, trigger: str, effort: str | None, kind: str, config: Config
+    ) -> str:
+        """Do not strand a late database insertion when admission is cancelled."""
+        opening = asyncio.create_task(
+            asyncio.to_thread(runs.start, self.paths, job, trigger, effort=effort, kind=kind)
         )
-        run_id = await asyncio.to_thread(runs.start, self.paths, job, trigger, effort=effort)
+        try:
+            run_id = await asyncio.shield(opening)
+        except asyncio.CancelledError:
+            run_id = await execution.finish_cleanup(opening)
+            await execution.finish_cleanup(
+                asyncio.to_thread(
+                    self._finish,
+                    RunResult("error", run_id, error="cancelled (enso stopped)"),
+                    config,
+                )
+            )
+            raise
+        return run_id
+
+    async def _run_locked(self, job: Job, trigger: str, config: Config) -> RunResult:
+        agent = job.agent
+        effort = routing.clamp_effort(agent.provider, agent.model, agent.effort) if agent else None
+        kind = execution_kind(job, config)
+        run_id = await self._open_run(job, trigger, effort, kind, config)
         log.info(
-            "start run=%s trigger=%s %s %s %s workspace=%s prerun=%s postrun=%s timeout=%ss",
+            "start run=%s trigger=%s kind=%s workspace=%s timeout=%ss",
             run_id,
             trigger,
-            job.provider,
-            job.model,
-            effort,
+            kind,
             job.workspace,
-            job.prerun or "-",
-            job.postrun or "-",
             job.timeout,
         )
         started = time.monotonic()
         resource_locks: list[IO[str]] = []
         stage: taskflow.StageRun | None = None
-        prerun: Prerun | None = None
+        gate: Gate | None = None
         try:
             self._run_env[run_id] = {
                 **os.environ,
@@ -331,27 +367,29 @@ class JobRunner:
                     secrets.resolve, self.paths, job.secrets, key_file=config.secret_key
                 ),
             }
-            prerun = await self._prerun(job, run_id)
-            if prerun.outcome == "error":
+            gate = await self._gate(job, run_id)
+            if gate.outcome == "error":
                 result = RunResult(
-                    "prerun_error", run_id, error=prerun.diagnostic, exit_code=prerun.exit_code
+                    "gate_error", run_id, error=gate.diagnostic, exit_code=gate.exit_code
                 )
-            elif prerun.outcome == "no_work":
+            elif gate.outcome == "no_work":
                 result = RunResult("no_work", run_id, exit_code=1)
             else:
-                resource_locks, collision = await self._acquire_resources(job, config)
+                resource_locks, collision = await self._acquire_resources(job, run_id, config)
+                if not collision:
+                    collision = await asyncio.to_thread(self._admission_problem, job, config)
                 if collision:
                     log.info(collision)
                     result = RunResult("skipped", run_id, error=collision)
                 else:
-                    stage, early = await self._claim(job, run_id, prerun.output, config=config)
+                    stage, early = await self._claim(job, run_id, gate.output, config=config)
                     if early is not None:
                         result = early
                     else:
                         result = await self._turns(
-                            job, run_id, prerun.output, effort, started, stage, config=config
+                            job, run_id, gate.output, effort, started, stage, config=config
                         )
-            if job.postrun and result.status in ("no_work", "prerun_error", "skipped"):
+            if job.postrun and result.status in ("no_work", "gate_error", "skipped"):
                 hook = await self._postrun(
                     job, result, int((time.monotonic() - started) * 1000), attempt=0
                 )
@@ -361,12 +399,12 @@ class JobRunner:
             if stage is not None:
                 result = replace(result, task=stage.task.ref)
                 await self._settle(stage, run_id, result.status, config=config, error=result.error)
-                await workflows.drain_events(self.paths, config)
+                await workflows.drain_events(self.paths, config, ref=stage.task.ref)
                 stage = taskflow.end_ownership(stage)
-            await asyncio.to_thread(self._finish, result, config)
+            await execution.run_sync(self._finish, result, config)
         except secrets.SecretError as exc:
             result = RunResult("error", run_id, error=str(exc))
-            await asyncio.to_thread(self._finish, result, config)
+            await execution.run_sync(self._finish, result, config)
             log.warning("run=%s could not resolve secrets: %s", run_id, exc)
         except BaseException as exc:
             # A stop (cancellation) or a bug must not leave the row ``running`` forever:
@@ -374,14 +412,22 @@ class JobRunner:
             cancelled = isinstance(exc, asyncio.CancelledError)
             error = "cancelled (enso stopped)" if cancelled else f"{type(exc).__name__}: {exc}"
             task = stage.task.ref if stage is not None else None
-            await asyncio.to_thread(
-                self._finish, RunResult("error", run_id, error=error, task=task), config
-            )
-            log.warning("run=%s did not finish: %s", run_id, error)
-            if stage is not None:
-                await self._settle(
-                    stage, run_id, "cancelled" if cancelled else "error", config=config, error=error
+
+            async def close_interrupted() -> None:
+                if stage is not None:
+                    await self._settle(
+                        stage,
+                        run_id,
+                        "cancelled" if cancelled else "error",
+                        config=config,
+                        error=error,
+                    )
+                await asyncio.to_thread(
+                    self._finish, RunResult("error", run_id, error=error, task=task), config
                 )
+
+            await execution.finish_cleanup(close_interrupted())
+            log.warning("run=%s did not finish: %s", run_id, error)
             raise
         finally:
             self._run_env.pop(run_id, None)
@@ -390,31 +436,41 @@ class JobRunner:
             for lock in resource_locks:
                 lock.close()
         if stage is not None:
-            await asyncio.to_thread(tasks.settle_dependencies, self.paths, config)
-        if stage is not None and job.project is not None:
-            settled = await asyncio.to_thread(tasks.get, self.paths, stage.task.ref)
-            if settled.finished:
-                await self._sweep(job.project, config)
+            await self._finish_stage(job, stage, config)
         log.info(
             "finish status=%s exit=%s output_len=%d",
             result.status,
             result.exit_code,
             len(result.output),
         )
-        await self._alert(job, prerun, result, trigger=trigger, config=config)
+        await self._alert(job, gate, result, trigger=trigger, config=config)
         return result
 
-    async def _acquire_resources(self, job: Job, config: Config) -> tuple[list[IO[str]], str]:
-        """Reserve explicit resources and project capacity without waiting or partial holds."""
+    async def _finish_stage(self, job: Job, stage: taskflow.StageRun, config: Config) -> None:
+        await asyncio.to_thread(tasks.settle_dependencies, self.paths, config)
+        if job.project is not None:
+            settled = await asyncio.to_thread(tasks.get, self.paths, stage.task.ref)
+            if settled.finished:
+                await self._sweep(job.project, config)
+
+    async def _acquire_resources(
+        self, job: Job, run_id: str, config: Config
+    ) -> tuple[list[IO[str]], str]:
+        """Admit one group member, then reserve project capacity without partial holds."""
         held: list[IO[str]] = []
         try:
-            if job.group:
-                lock = await asyncio.to_thread(acquire_group_lock, self.paths, job.group)
-                if lock is None:
-                    return [], f"concurrency group {job.group!r} is already running"
-                held.append(lock)
+            admission = await concurrency.acquire(self.paths, job, run_id)
+            if admission.reason != "acquired":
+                why = {
+                    "busy": "is already running",
+                    "expired": "maximum wait expired",
+                    "paused": "Enso is paused for maintenance",
+                }[admission.reason]
+                return [], f"concurrency group {job.group!r}: {why}"
+            if admission.lock is not None:
+                held.append(admission.lock)
             if job.project is not None:
-                slot = await asyncio.to_thread(
+                slot = await self._lock(
                     acquire_project_slot,
                     self.paths,
                     job.project,
@@ -450,12 +506,12 @@ class JobRunner:
         return duration_ms
 
     async def _claim(
-        self, job: Job, run_id: str, prerun_output: str, *, config: Config
+        self, job: Job, run_id: str, gate_output: str, *, config: Config
     ) -> tuple[taskflow.StageRun | None, RunResult | None]:
         """On a stage job, take and frame a task; a result here means no provider turn runs."""
         if job.stage is None:
             return None, None
-        stage = await taskflow.begin(self.paths, config, job, run_id, prerun_output)
+        stage = await taskflow.begin(self.paths, config, job, run_id, gate_output)
         if stage is None:
             log.info("no task is ready in %s/%s", job.project, job.stage)
             return None, RunResult("no_work", run_id)
@@ -470,188 +526,212 @@ class JobRunner:
         self,
         job: Job,
         run_id: str,
-        prerun_output: str,
-        effort: str,
+        gate_output: str,
+        effort: str | None,
         started: float,
         stage: taskflow.StageRun | None,
         *,
         config: Config,
     ) -> RunResult:
-        """The provider turns and hooks, framed by the stage's prompt when there is one."""
-        if stage is not None and command_stage(job, config):
-            return await self._stage_command(job, run_id, stage, started, config=config)
-        if stage is not None:
-            return await self._stage_turns(job, run_id, stage, effort, started, config=config)
-        prompt = stage.prompt if stage is not None else None
-        if job.postrun:
-            return await self._execute_checked(
-                job, run_id, prerun_output, effort, started, prompt=prompt, config=config
-            )
-        turn_started = time.monotonic()
-        result = await self._execute(
-            job, run_id, prerun_output, effort, prompt=prompt, config=config
+        """One executor/check loop for ordinary jobs and workflow stages."""
+        initial = (
+            stage.prompt
+            if stage is not None
+            else job.prompt.replace("{{gate_output}}", gate_output)
         )
-        await self._record_attempt(
-            result, 1, duration_ms=int((time.monotonic() - turn_started) * 1000)
-        )
-        return result
-
-    async def _stage_command(
-        self, job: Job, run_id: str, stage: taskflow.StageRun, started: float, *, config: Config
-    ) -> RunResult:
-        """Run a configured command or integration transaction without invoking a model."""
-        assert job.project is not None and job.stage is not None
-        definition = config.projects[job.project].stage(job.stage)
-        assert definition is not None
-        output = ""
-        exit_code: int | None = 0
-        if definition.command is not None:
-            output, stderr, exit_code, timed_out = await execution.run_process(
-                ["bash", "-c", definition.command],
-                cwd=project_directory(self.paths, job.workspace, job.project),
-                env=self._env(job, run_id),
-                timeout=job.timeout,
-                merge_stderr=False,
-                label=f"stage command {job.ref}",
-                output_keep=POSTRUN_FEEDBACK_LIMIT,
-            )
-            if timed_out or exit_code != 0:
-                result = RunResult(
-                    "timeout" if timed_out else "error",
-                    run_id,
-                    output=output,
-                    error=(
-                        f"stage command timed out after {job.timeout}s"
-                        if timed_out
-                        else enso_error(stderr) or f"stage command exited with status {exit_code}"
-                    ),
-                    exit_code=exit_code,
-                )
-                await self._record_attempt(result, 1)
-                return result
-        tasks.move(
-            self.paths,
-            config,
-            stage.task.ref,
-            "advance",
-            actor=tasks.ENSO_ACTOR,
-            run_id=run_id,
-            message="Integration requested" if definition.integrate else "Stage command completed",
-        )
-        result = RunResult("ok", run_id, output=output, exit_code=exit_code)
-        await self._record_attempt(result, 1)
-        if job.postrun:
-            hook = await self._postrun(
-                job, result, int((time.monotonic() - started) * 1000), attempt=1
-            )
-            result, diagnostic = self._checked_result(job, result, hook, attempt=1)
-            await self._record_attempt(result, 1, hook=replace(hook, error=diagnostic))
-            if result.status != "ok":
-                return result
-        evaluated = await workflows.evaluate(
-            self.paths, config, stage.task.ref, run_id, self._env(job, run_id)
-        )
-        if evaluated.status != "accepted":
-            return replace(result, status="error", error=evaluated.feedback)
-        return result
-
-    async def _stage_turns(
-        self,
-        job: Job,
-        run_id: str,
-        stage: taskflow.StageRun,
-        effort: str,
-        started: float,
-        *,
-        config: Config,
-    ) -> RunResult:
-        """Submit, stop writing, verify, and repair within one shared provider budget."""
-        assert stage.prompt is not None
-        provider = make_provider(job.provider, config.providers[job.provider].path)
-        args = config.provider_args(job.workspace, job.provider)
+        assert initial is not None
+        prompt = initial
         remaining = float(job.timeout)
-        prompt = stage.prompt
         session_id = None
         attempt = 1
-        postrun_followups = 0
+        followups = 0
         while True:
             turn_started = time.monotonic()
-            turn = await execution.execute_turn(
-                provider,
-                prompt,
-                job.model,
-                effort,
-                args,
-                cwd=self.paths.workspace(job.workspace),
-                env=self._env(job, run_id),
-                timeout=remaining,
-                session_id=session_id,
+            result = await self._invoke(
+                job, run_id, prompt, effort, remaining, session_id, stage, config
             )
             elapsed = time.monotonic() - turn_started
             remaining = max(0.0, remaining - elapsed)
-            duration_ms = int(elapsed * 1000)
-            result = RunResult(
-                turn.status,
-                run_id,
-                output=turn.output,
-                error=turn.error,
-                exit_code=turn.exit_code,
-                session_id=turn.session_id,
+            result, feedback = await self._check_attempt(
+                job, result, attempt, int(elapsed * 1000), started, followups, remaining
             )
-            if result.status == "timeout":
-                result = replace(
-                    result, error=f"timed out after {job.timeout}s of provider runtime"
-                )
-            await self._record_attempt(result, attempt, duration_ms=duration_ms)
-            if job.postrun:
-                hook = await self._postrun(
-                    job,
-                    result,
-                    int((time.monotonic() - started) * 1000),
-                    attempt=attempt,
-                    followups_used=postrun_followups,
-                )
-                checked, diagnostic = self._checked_result(
-                    job,
-                    result,
-                    hook,
-                    attempt=attempt,
-                    followups_used=postrun_followups,
-                )
-                await self._record_attempt(
-                    result, attempt, hook=replace(hook, error=diagnostic), duration_ms=duration_ms
-                )
-                if checked.status != "ok":
-                    return checked
-                if hook.exit_code == 10:
-                    if remaining <= 0:
-                        return replace(
-                            result, status="timeout", error="provider time budget exhausted"
-                        )
-                    prompt = hook.output
-                    session_id = result.session_id
-                    postrun_followups += 1
-                    attempt += 1
-                    continue
             if result.status != "ok":
                 return result
-            evaluated = await workflows.evaluate(
-                self.paths, config, stage.task.ref, run_id, self._env(job, run_id)
-            )
-            if evaluated.status == "accepted":
+            if feedback is not None:
+                followups += 1
+            elif stage is not None:
+                evaluated = await workflows.evaluate(
+                    self.paths, config, stage.task.ref, run_id, self._env(job, run_id)
+                )
+                if evaluated.status == "accepted":
+                    return result
+                if evaluated.status != "repair":
+                    return replace(result, status="error", error=evaluated.feedback)
+                feedback = (
+                    initial
+                    + "\n\n[Enso verification feedback]\n"
+                    + evaluated.feedback
+                    + "\nRepair the candidate and submit a new handoff, then stop."
+                )
+            if feedback is None:
                 return result
-            if evaluated.status != "repair":
-                return replace(result, status="error", error=evaluated.feedback)
+            if job.agent is None or not result.session_id:
+                return replace(
+                    result,
+                    status="error",
+                    error="cannot repair: the provider returned no resumable session id",
+                )
             if remaining <= 0:
                 return replace(result, status="timeout", error="provider time budget exhausted")
-            prompt = (
-                stage.prompt
-                + "\n\n[Enso verification feedback]\n"
-                + evaluated.feedback
-                + "\nRepair the candidate and submit a new handoff, then stop."
-            )
-            session_id = result.session_id
+            prompt, session_id = feedback, result.session_id
             attempt += 1
+
+    async def _invoke(
+        self,
+        job: Job,
+        run_id: str,
+        prompt: str,
+        effort: str | None,
+        timeout: float,
+        session_id: str | None,
+        stage: taskflow.StageRun | None,
+        config: Config,
+    ) -> RunResult:
+        """Execute work; the caller owns postrun and workflow acceptance for every outcome."""
+        agent = job.agent
+        if agent is None:
+            return await self._command(job, run_id, stage, config)
+        assert effort is not None
+        provider = make_provider(agent.provider, config.providers[agent.provider].path)
+        args = config.provider_args(job.workspace, agent.provider)
+        cwd, env = self.paths.workspace(job.workspace), self._env(job, run_id)
+        if job.postrun is not None or stage is not None:
+            turn = await execution.execute_turn(
+                provider,
+                prompt,
+                agent.model,
+                effort,
+                args,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                session_id=session_id,
+            )
+        else:
+            turn = await execution.execute_batch(
+                provider,
+                prompt,
+                agent.model,
+                effort,
+                args,
+                cwd=cwd,
+                env=env,
+                timeout=timeout,
+                label=f"job {job.ref}",
+            )
+        error = turn.error
+        if turn.status == "timeout":
+            error = f"timed out after {job.timeout}s of provider runtime"
+        return RunResult(
+            turn.status,
+            run_id,
+            output=turn.output,
+            error=error,
+            exit_code=turn.exit_code,
+            session_id=turn.session_id,
+        )
+
+    async def _command(
+        self, job: Job, run_id: str, stage: taskflow.StageRun | None, config: Config
+    ) -> RunResult:
+        """Commands share execution and checks; integration submits without a subprocess."""
+        command, cwd = job.command, job.job_dir
+        if stage is not None:
+            assert job.project is not None and job.stage is not None
+            definition = config.projects[job.project].stage(job.stage)
+            assert definition is not None
+            command = definition.command
+            cwd = project_directory(self.paths, job.workspace, job.project)
+        output = ""
+        rc: int | None = 0
+        if command is not None:
+            try:
+                output, stderr, rc, timed_out = await execution.run_process(
+                    ["bash", "-c", command],
+                    cwd=cwd,
+                    env=self._env(job, run_id),
+                    timeout=job.timeout,
+                    merge_stderr=False,
+                    label=f"command {job.ref}",
+                )
+            except OSError as exc:
+                return RunResult("error", run_id, error=f"could not start command: {exc}")
+            if timed_out or rc != 0:
+                error = (
+                    f"command timed out after {job.timeout}s"
+                    if timed_out
+                    else enso_error(stderr)
+                    or stderr.strip()[-2000:]
+                    or f"command exited with status {rc}"
+                )
+                return RunResult(
+                    "timeout" if timed_out else "error",
+                    run_id,
+                    output=output,
+                    error=error,
+                    exit_code=rc,
+                )
+        if stage is not None:
+            await execution.run_sync(
+                tasks.move,
+                self.paths,
+                config,
+                stage.task.ref,
+                "advance",
+                actor=tasks.ENSO_ACTOR,
+                run_id=run_id,
+                message="Stage command completed" if command else "Integration requested",
+            )
+        return RunResult("ok", run_id, output=output, exit_code=rc)
+
+    async def _check_attempt(
+        self,
+        job: Job,
+        result: RunResult,
+        attempt: int,
+        duration_ms: int,
+        started: float,
+        followups: int,
+        remaining: float,
+    ) -> tuple[RunResult, str | None]:
+        """Persist work before checking, retaining the execution outcome when a hook fails."""
+        await self._record_attempt(result, attempt, duration_ms=duration_ms)
+        if job.postrun is None:
+            return result, None
+        hook = await self._postrun(
+            job,
+            result,
+            int((time.monotonic() - started) * 1000),
+            attempt=attempt,
+            followups_used=followups,
+        )
+        checked, diagnostic = self._checked_result(
+            job, result, hook, attempt=attempt, followups_used=followups
+        )
+        if not diagnostic and hook.exit_code == 10 and remaining <= 0:
+            diagnostic = (
+                "postrun requested a follow-up after the provider time budget was exhausted"
+            )
+            checked = replace(
+                result,
+                status="timeout",
+                error=f"timed out after {job.timeout}s of provider runtime",
+                postrun_error=diagnostic,
+            )
+        await self._record_attempt(
+            result, attempt, hook=replace(hook, error=diagnostic), duration_ms=duration_ms
+        )
+        return checked, hook.output if hook.exit_code == 10 and not diagnostic else None
 
     async def _settle(
         self,
@@ -680,74 +760,37 @@ class JobRunner:
             "ENSO_HOME": str(self.paths.home),
         }
 
-    async def _prerun(self, job: Job, run_id: str) -> Prerun:
+    async def _gate(self, job: Job, run_id: str) -> Gate:
         """exit 0 → run with stdout; 1 → no work; anything else, a timeout, or no script → error."""
-        if job.prerun is None:
-            return Prerun("open")
-        script = job.job_dir / job.prerun
-        if not script.is_file():
-            return Prerun("error", diagnostic=f"prerun script not found: {job.prerun}")
-        log.info("prerun %s timeout=%ss", job.prerun, job.prerun_timeout)
+        if job.gate is None:
+            return Gate("open")
+        log.info("gate timeout=%ss", job.gate.timeout)
         try:
             stdout, stderr, rc, timed_out = await execution.run_process(
-                ["bash", str(script)],
+                ["bash", "-c", job.gate.command],
                 cwd=job.job_dir,
                 env=self._env(job, run_id),
-                timeout=job.prerun_timeout,
+                timeout=job.gate.timeout,
                 merge_stderr=False,
-                label=f"prerun {job.ref}",
+                label=f"gate {job.ref}",
             )
         except OSError as exc:
-            return Prerun("error", diagnostic=f"could not start prerun: {exc}")
+            return Gate("error", diagnostic=f"could not start gate: {exc}")
         if timed_out:
-            diagnostic = f"prerun timed out after {job.prerun_timeout}s"
+            diagnostic = f"gate timed out after {job.gate.timeout}s"
             log.warning(diagnostic)
-            return Prerun("error", diagnostic=diagnostic, exit_code=rc)
+            return Gate("error", diagnostic=diagnostic, exit_code=rc)
         if rc == 0:
-            log.info("prerun open output_len=%d", len(stdout))
-            return Prerun("open", output=stdout.strip(), exit_code=0)
+            log.info("gate open output_len=%d", len(stdout))
+            return Gate("open", output=stdout.strip(), exit_code=0)
         if rc == 1:
-            log.debug("prerun closed: no work")
-            return Prerun("no_work", exit_code=1)
+            log.debug("gate closed: no work")
+            return Gate("no_work", exit_code=1)
         # Only an explicit ENSO_ERROR line reaches the alert: stdout and the rest of
         # stderr may hold whatever the script scraped.
-        diagnostic = enso_error(stderr) or f"prerun exited with status {rc}"
-        log.warning("prerun failed: %s", diagnostic)
-        return Prerun("error", diagnostic=diagnostic, exit_code=rc)
-
-    async def _execute(
-        self,
-        job: Job,
-        run_id: str,
-        prerun_output: str,
-        effort: str,
-        *,
-        prompt: str | None = None,
-        config: Config,
-    ) -> RunResult:
-        """Run the provider in batch mode with the prerun output substituted into the prompt.
-
-        ``prompt`` replaces the job's own when a stage run has already framed it.
-        """
-        if prompt is None:
-            prompt = job.prompt.replace("{{prerun_output}}", prerun_output)
-        provider = make_provider(job.provider, config.providers[job.provider].path)
-        args = config.provider_args(job.workspace, job.provider)
-        cwd = self.paths.workspace(job.workspace)
-        turn = await execution.execute_batch(
-            provider,
-            prompt,
-            job.model,
-            effort,
-            args,
-            cwd=cwd,
-            env=self._env(job, run_id),
-            timeout=job.timeout,
-            label=f"job {job.ref}",
-        )
-        return RunResult(
-            turn.status, run_id, output=turn.output, error=turn.error, exit_code=turn.exit_code
-        )
+        diagnostic = enso_error(stderr) or f"gate exited with status {rc}"
+        log.warning("gate failed: %s", diagnostic)
+        return Gate("error", diagnostic=diagnostic, exit_code=rc)
 
     async def _record_attempt(
         self,
@@ -790,11 +833,13 @@ class JobRunner:
         if not diagnostic and hook.exit_code == 10:
             if attempt == 0:
                 diagnostic = "postrun requested a follow-up, but no provider ran"
+            elif job.agent is None:
+                diagnostic = "postrun cannot request an agent follow-up for a command job"
             elif result.status != "ok":
                 diagnostic = f"postrun cannot request a follow-up after provider {result.status}"
-            elif followups_used >= job.max_followups:
+            elif followups_used >= job.agent.max_followups:
                 diagnostic = (
-                    f"postrun requested a follow-up beyond max_followups={job.max_followups}"
+                    f"postrun requested a follow-up beyond max_followups={job.agent.max_followups}"
                 )
             elif not result.session_id:
                 diagnostic = (
@@ -809,77 +854,6 @@ class JobRunner:
             ), diagnostic
         return replace(result, postrun_error=diagnostic), diagnostic
 
-    async def _execute_checked(
-        self,
-        job: Job,
-        run_id: str,
-        prerun_output: str,
-        effort: str,
-        started: float,
-        *,
-        prompt: str | None = None,
-        config: Config,
-    ) -> RunResult:
-        """Run one fresh session and bounded repairs, sharing only the provider time budget."""
-        if prompt is None:
-            prompt = job.prompt.replace("{{prerun_output}}", prerun_output)
-        provider = make_provider(job.provider, config.providers[job.provider].path)
-        args = config.provider_args(job.workspace, job.provider)
-        remaining = float(job.timeout)
-        session_id = None
-        attempt = 1
-        while True:
-            turn_started = time.monotonic()
-            turn = await execution.execute_turn(
-                provider,
-                prompt,
-                job.model,
-                effort,
-                args,
-                cwd=self.paths.workspace(job.workspace),
-                env=self._env(job, run_id),
-                timeout=remaining,
-                session_id=session_id,
-            )
-            elapsed = time.monotonic() - turn_started
-            remaining = max(0.0, remaining - elapsed)
-            duration_ms = int(elapsed * 1000)
-            result = RunResult(
-                turn.status,
-                run_id,
-                output=turn.output,
-                error=turn.error,
-                exit_code=turn.exit_code,
-                session_id=turn.session_id,
-            )
-            if result.status == "timeout":
-                result = replace(
-                    result, error=f"timed out after {job.timeout}s of provider runtime"
-                )
-            await self._record_attempt(result, attempt, duration_ms=duration_ms)
-            hook = await self._postrun(
-                job, result, int((time.monotonic() - started) * 1000), attempt=attempt
-            )
-            checked, diagnostic = self._checked_result(job, result, hook, attempt=attempt)
-            if not diagnostic and hook.exit_code == 10 and remaining <= 0:
-                diagnostic = (
-                    "postrun requested a follow-up after the provider time budget was exhausted"
-                )
-                checked = replace(
-                    result,
-                    status="timeout",
-                    error=f"timed out after {job.timeout}s of provider runtime",
-                    postrun_error=diagnostic,
-                )
-            await self._record_attempt(
-                result, attempt, hook=replace(hook, error=diagnostic), duration_ms=duration_ms
-            )
-            if hook.exit_code != 10 or diagnostic:
-                return checked
-            prompt = hook.output
-            session_id = result.session_id
-            attempt += 1
-
     async def _postrun(
         self,
         job: Job,
@@ -893,24 +867,23 @@ class JobRunner:
         assert job.postrun is not None
         assert result.run_id is not None
         followups_used = max(0, attempt - 1) if followups_used is None else followups_used
-        script = job.job_dir / job.postrun
-        if not script.is_file():
-            return Postrun(error=f"postrun script not found: {job.postrun}")
         env = {
             **self._env(job, result.run_id),
             "ENSO_RUN_STATUS": result.status,
             "ENSO_RUN_EXIT_CODE": "" if result.exit_code is None else str(result.exit_code),
             "ENSO_RUN_DURATION_MS": str(duration_ms),
             "ENSO_RUN_ATTEMPT": str(attempt),
-            "ENSO_RUN_FOLLOWUPS_REMAINING": str(max(0, job.max_followups - followups_used)),
+            "ENSO_RUN_FOLLOWUPS_REMAINING": str(
+                max(0, (job.agent.max_followups if job.agent else 0) - followups_used)
+            ),
         }
-        log.info("postrun %s timeout=%ss", job.postrun, job.postrun_timeout)
+        log.info("postrun timeout=%ss", job.postrun.timeout)
         try:
             stdout, stderr, rc, timed_out = await execution.run_process(
-                ["bash", str(script)],
+                ["bash", "-c", job.postrun.command],
                 cwd=job.job_dir,
                 env=env,
-                timeout=job.postrun_timeout,
+                timeout=job.postrun.timeout,
                 merge_stderr=False,
                 label=f"postrun {job.ref}",
                 stdin=result.output.encode(),
@@ -921,7 +894,7 @@ class JobRunner:
         except OSError as exc:
             return Postrun(error=f"could not start postrun: {exc}")
         if timed_out:
-            return Postrun(rc, stdout, f"postrun timed out after {job.postrun_timeout}s")
+            return Postrun(rc, stdout, f"postrun timed out after {job.postrun.timeout}s")
         log.info("postrun exit=%s output_len=%d", rc, len(stdout))
         if rc == 0:
             return Postrun(rc, stdout)
@@ -940,21 +913,21 @@ class JobRunner:
     # -- Alerts --
 
     async def _alert(
-        self, job: Job, prerun: Prerun | None, result: RunResult, *, trigger: str, config: Config
+        self, job: Job, gate: Gate | None, result: RunResult, *, trigger: str, config: Config
     ) -> None:
         if trigger not in ("schedule", "ready"):
             return
-        if prerun is None:
+        if gate is None:
             # Secrets never resolved, so nothing started. A waiting stage task retries this
             # every tick; alert like a failing gate rather than once per attempt.
             await self._alert_once(job, "secrets", result.error, result.error, config=config)
             return
-        if result.status == "prerun_error":
-            diagnostic = prerun.diagnostic
+        if result.status == "gate_error":
+            diagnostic = gate.diagnostic
             if result.postrun_error:
                 diagnostic += f"\nPostrun: {result.postrun_error}"
             await self._alert_once(
-                job, "prerun", diagnostic, f"{prerun.exit_code}\0{diagnostic}", config=config
+                job, "gate", diagnostic, f"{gate.exit_code}\0{diagnostic}", config=config
             )
             return
         await self._recovered(job, config=config)
@@ -976,7 +949,7 @@ class JobRunner:
     async def _alert_once(
         self,
         job: Job,
-        kind: Literal["prerun", "secrets"],
+        kind: Literal["gate", "secrets"],
         diagnostic: str,
         identity: str,
         *,
@@ -985,8 +958,8 @@ class JobRunner:
         """Alert once per distinct failure before the agent, again after a day of the same one."""
         fingerprint = hashlib.sha256(identity.encode()).hexdigest()
         if kind == "secrets":
-            fingerprint = f"secrets:{fingerprint}"  # names the recovery; prerun stays bare hex
-        what = "prerun failed" if kind == "prerun" else "secrets unavailable"
+            fingerprint = f"secrets:{fingerprint}"  # names the recovery; gate stays bare hex
+        what = "gate failed" if kind == "gate" else "secrets unavailable"
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         alerted = _parse_stamp(state.failure_alerted_at)
         if (
@@ -1000,11 +973,11 @@ class JobRunner:
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, fingerprint, db.now())
 
     async def _recovered(self, job: Job, *, config: Config) -> None:
-        """One notice when secrets resolve and the prerun works again after an alerted failure."""
+        """One notice when secrets resolve and the gate works again after an alerted failure."""
         state = await asyncio.to_thread(db.job_state, self.paths, job.ref)
         if state.failure_fingerprint is None:
             return
-        kind = "secrets" if state.failure_fingerprint.startswith("secrets:") else "prerun"
+        kind = "secrets" if state.failure_fingerprint.startswith("secrets:") else "gate"
         if await self._send(job, f"✅ [{job.ref}] {kind} recovered", config=config):
             await asyncio.to_thread(db.set_failure, self.paths, job.ref, None, None)
 

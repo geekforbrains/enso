@@ -229,7 +229,10 @@ def test_migration_matches_fresh_schema_and_preserves_existing_content(enso_home
     migrations.add_secret_store(enso_home)
     fresh = Paths(tmp_path / "fresh")
     db.initialize(fresh)
-    with db.reader(enso_home) as upgraded, db.reader(fresh) as new:
+    # Test this historical step independently of later database migrations.
+    with closing(sqlite3.connect(enso_home.db)) as upgraded, db.reader(fresh) as new:
+        assert upgraded.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert upgraded.execute("SELECT count(*) FROM _enso_secrets").fetchone()[0] == 0
         query = (
             "SELECT sql FROM sqlite_master WHERE name IN "
             "('_enso_secrets','_enso_secret_store') ORDER BY name"
@@ -239,5 +242,4 @@ def test_migration_matches_fresh_schema_and_preserves_existing_content(enso_home
         ]
         assert upgraded.execute("SELECT body FROM personal_notes").fetchone()[0] == "keep"
     assert (old_files / "old.env").read_text() == "IGNORED=value\n"
-    assert secrets.names(enso_home) == []
     assert not secret_key_file(enso_home).exists()

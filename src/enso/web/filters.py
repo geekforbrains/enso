@@ -139,7 +139,7 @@ def status_class(status: str | None) -> str:
         "running": "running",
         "error": "error",
         "timeout": "warning",
-        "prerun_error": "error",
+        "gate_error": "error",
         "warning": "warning",
         "no_work": "muted",
         "skipped": "muted",

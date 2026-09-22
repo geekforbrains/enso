@@ -199,7 +199,7 @@ def audit(
 
     ``config`` supplies bindings and project definitions. Without it the orphan and script
     checks are skipped, since a workspace may be bound in a config that cannot be read. Jobs
-    are read either way, though some stage jobs cannot be parsed without their definitions.
+    are read either way; stage bindings are validated against definitions when available.
     ``user_dirs`` overrides where user-level skills are looked for (tests).
     """
     jobs, _ = load_jobs(paths, config)

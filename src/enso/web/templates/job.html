@@ -88,9 +88,10 @@
       <dt>File</dt><dd><code>{{ job.path }}</code></dd>
       <dt>Schedule</dt><dd>{% if job.schedule %}<code>{{ job.schedule }}</code> <span class="muted">cron, local time</span>{% else %}<span class="muted">none; it fires when work is ready</span>{% endif %}</dd>
       {% if job.stage %}<dt>Stage</dt><dd><a href="/tasks?project={{ job.project|urlencode }}&amp;stage={{ job.stage|urlencode }}"><code>{{ job.project }}</code> / <code>{{ job.stage }}</code></a> <span class="muted">a stage job: it claims a ready task there</span></dd>{% endif %}
-      {% if engine %}<dt>Execution</dt><dd>Enso engine · no model</dd>{% else %}<dt>Agent</dt><dd><span class="chip">{{ job.provider }}</span> <span class="chip">{{ job.model }}</span> <span class="chip">{{ job.effort }}</span></dd>{% endif %}
+      {% if job.agent %}<dt>Agent</dt><dd><span class="chip">{{ job.agent.provider }}</span> <span class="chip">{{ job.agent.model }}</span> <span class="chip">{{ job.agent.effort }}</span></dd>{% else %}<dt>Execution</dt><dd>{{ 'Integration' if kind == 'integration' else 'Command' if kind == 'command' else 'Project stage' }} · no model</dd>{% endif %}
+      {% if command %}<dt>Command</dt><dd><code>{{ command }}</code></dd>{% endif %}
       <dt>Workspace</dt><dd><a href="/workspaces/{{ job.workspace|urlencode }}">{{ job.workspace }}</a></dd>
-      <dt>Concurrency group</dt><dd>{% if job.group %}<code>{{ job.group }}</code>{% else %}<span class="muted">none</span>{% endif %}{% if job.stage %} <span class="muted">· project capacity is enforced separately</span>{% endif %}</dd>
+      <dt>Concurrency group</dt><dd>{% if job.group %}<code>{{ job.group }}</code> · {{ job.concurrency.on_busy }} when busy{% if job.concurrency.max_wait %} · wait up to {{ job.concurrency.max_wait }}s{% endif %}{% else %}<span class="muted">none</span>{% endif %}{% if job.stage %} <span class="muted">· project capacity is enforced separately</span>{% endif %}</dd>
       {% if project %}<dt>Project capacity</dt><dd>{{ project.max_concurrency }} task execution{{ 's' if project.max_concurrency != 1 }}</dd>{% endif %}
       {% if stage_definition %}
       <dt>Required checks</dt><dd>{% if stage_definition.checks %}{% for check in stage_definition.checks %}{{ check.name }}{% if not loop.last %}, {% endif %}{% endfor %}{% else %}<span class="muted">none configured</span>{% endif %}</dd>
@@ -99,9 +100,9 @@
       <dt>Enabled</dt><dd>{{ 'yes' if job.enabled else 'no' }}</dd>
       <dt>Timeout</dt><dd>{{ job.timeout }}s</dd>
       <dt>Secrets</dt><dd>{% if job.secrets %}{% for name in job.secrets %}<code>{{ name }}</code>{% if not loop.last %}, {% endif %}{% endfor %}{% else %}<span class="muted">none</span>{% endif %}</dd>
-      <dt>Prerun</dt><dd>{% if job.prerun %}<code>{{ job.prerun }}</code> ({{ job.prerun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
-      <dt>Follow-up limit</dt><dd>{{ job.max_followups }}</dd>
-      <dt>Postrun</dt><dd>{% if job.postrun %}<code>{{ job.postrun }}</code> ({{ job.postrun_timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
+      <dt>Gate</dt><dd>{% if job.gate %}<code>{{ job.gate.command }}</code> ({{ job.gate.timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
+      {% if job.agent %}<dt>Follow-up limit</dt><dd>{{ job.agent.max_followups }}</dd>{% endif %}
+      <dt>Postrun</dt><dd>{% if job.postrun %}<code>{{ job.postrun.command }}</code> ({{ job.postrun.timeout }}s timeout){% else %}<span class="muted">none</span>{% endif %}</dd>
       <dt>Notify</dt><dd>{% if job.notify %}<code>{{ job.notify }}</code>{% else %}<span class="muted">transport default</span>{% endif %}</dd>
       <dt>Catch up</dt><dd>{{ 'yes' if job.catch_up else 'no' }} <span class="muted">(misfire grace {{ job.misfire_grace_seconds }}s)</span></dd>
       <dt>Next run</dt><dd>{% if next_run %}{{ next_run|when }} <span class="muted">({{ next_run|until }})</span>{% else %}<span class="muted">{{ 'not while it has problems' if problems else 'disabled' if not job.enabled else 'when a task is ready' if not job.schedule else '-' }}</span>{% endif %}</dd>
@@ -111,12 +112,11 @@
 </section>
 
 <section aria-labelledby="prompt-head">
-  <div class="shead"><h2 id="prompt-head">Prompt</h2>
+  <div class="shead"><h2 id="prompt-head">{{ 'Prompt' if job.agent else 'Description' }}</h2>
     <span class="right wide-only">rendered from JOB.md</span></div>
   <div class="panel">
-    {# An empty body makes JOB.md unparseable, so the else is a guard, not a state reached today. #}
     {% if prompt %}<div class="markdown">{{ prompt }}</div>
-    {% else %}<p class="empty">This job's JOB.md has no prompt body.</p>{% endif %}
+    {% else %}<p class="empty">This job's JOB.md has no description.</p>{% endif %}
   </div>
 </section>
 {% endif %}

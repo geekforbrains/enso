@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import os
 import sys
@@ -48,6 +49,32 @@ async def invoke(provider, tmp_path, *, prompt="Do the work.", session_id=None, 
         timeout=timeout,
         session_id=session_id,
     )
+
+
+@pytest.mark.parametrize("structured", [False, True])
+async def test_oversized_prompt_has_an_actionable_error(tmp_path, monkeypatch, structured):
+    async def too_large(*args, **kwargs):
+        raise OSError(errno.E2BIG, "Argument list too long")
+
+    monkeypatch.setattr(execution.asyncio, "create_subprocess_exec", too_large)
+    provider = ClaudeProvider("fake-provider")
+    if structured:
+        result = await invoke(provider, tmp_path)
+    else:
+        result = await execution.execute_batch(
+            provider,
+            "prompt",
+            "model",
+            "high",
+            [],
+            cwd=tmp_path,
+            env={},
+            timeout=3,
+            label="job",
+        )
+    assert result.status == "error" and result.exit_code is None
+    assert "operating system argument limit" in result.error
+    assert "reduce the prompt or gate output" in result.error
 
 
 @pytest.mark.parametrize("name", list(PROVIDER_CLASSES))

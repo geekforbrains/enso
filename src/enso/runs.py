@@ -1,4 +1,4 @@
-"""Job run history and bounded provider attempts, retained together in SQLite."""
+"""Job run history and bounded execution attempts, retained together in SQLite."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from . import db
 from .config import Paths
 from .jobs import Job
 
-OUTPUT_KEEP = 1024 * 1024  # a run keeps the final 1 MiB of provider output
+OUTPUT_KEEP = 1024 * 1024  # a run keeps the final 1 MiB of execution output
 ID_LENGTH = 12
 PAGE_SIZE = 500  # one viewer page holds the default retention (``runs.keep``)
 ERROR_PREVIEW = 200  # how much of an error a summary carries
-STATUSES = ("running", "ok", "error", "timeout", "no_work", "prerun_error", "skipped")
+STATUSES = ("running", "ok", "error", "timeout", "no_work", "gate_error", "skipped")
 
 
 @dataclass(frozen=True)
@@ -24,14 +24,15 @@ class Run:
     id: str
     job: str
     workspace: str
-    provider: str
-    model: str
-    effort: str
+    kind: str
+    provider: str | None
+    model: str | None
+    effort: str | None
     trigger: str  # schedule | manual | ready (a stage job fired because a task waited)
     started_at: str
     ended_at: str | None
     duration_ms: int | None
-    status: str  # running | ok | error | timeout | no_work | prerun_error | skipped
+    status: str  # running | ok | error | timeout | no_work | gate_error | skipped
     exit_code: int | None
     output: str | None
     error: str | None
@@ -44,7 +45,7 @@ class Run:
 
 @dataclass(frozen=True)
 class RunAttempt:
-    """One completed provider turn and its postrun check; zero means no provider ran."""
+    """One completed execution and its postrun check; zero means work did not start."""
 
     number: int
     status: str
@@ -72,9 +73,10 @@ class RunSummary:
     id: str
     job: str
     workspace: str
-    provider: str
-    model: str
-    effort: str
+    kind: str
+    provider: str | None
+    model: str | None
+    effort: str | None
     trigger: str
     started_at: str
     ended_at: str | None
@@ -89,7 +91,7 @@ class RunSummary:
 
 
 _SUMMARY_SELECT = f"""SELECT id, workspace || ':' || job AS job, workspace,
-        provider, model, effort, trigger, started_at,
+        kind, provider, model, effort, trigger, started_at,
         ended_at, duration_ms, status, exit_code,
         substr(error, 1, {ERROR_PREVIEW}) AS error_preview,
         output IS NOT NULL AS has_output
@@ -133,21 +135,26 @@ def _filters(
     return (f"WHERE {' AND '.join(clauses)}" if clauses else ""), params
 
 
-def start(paths: Paths, job: Job, trigger: str, *, effort: str) -> str:
+def start(
+    paths: Paths, job: Job, trigger: str, *, effort: str | None, kind: str | None = None
+) -> str:
     """Insert a ``running`` row before anything spawns; ``effort`` is the clamped level."""
+    kind = kind or ("agent" if job.agent is not None else "command")
+    agent = job.agent if kind == "agent" else None
     run_id = uuid.uuid4().hex[:ID_LENGTH]
     with db.transaction(paths) as con:
         con.execute(
-            """INSERT INTO runs (id, job, workspace, provider, model, effort, trigger,
+            """INSERT INTO runs (id, job, workspace, kind, provider, model, effort, trigger,
                                  started_at, status)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running')""",
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running')""",
             (
                 run_id,
                 job.dir_name,
                 job.workspace,
-                job.provider,
-                job.model,
-                effort,
+                kind,
+                agent.provider if agent else None,
+                agent.model if agent else None,
+                effort if agent else None,
                 trigger,
                 db.now(),
             ),

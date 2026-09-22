@@ -196,7 +196,7 @@ Enso installs these into `~/.enso/skills/`:
 | `enso` | The map: what Enso is, the home layout, the skill scopes, the CLI, and where the docs are |
 | `enso-browser` | Playwright CLI sessions and profiles, human login, and authorized browser actions; see [Browser](browser.md) |
 | `enso-heartbeat` | Finite future actions and temporary watches, script gates, event history, action receipts, and completion |
-| `enso-jobs` | Creating, testing, and troubleshooting scheduled and stage jobs and their prerun and postrun scripts |
+| `enso-jobs` | Scheduled agent/command jobs, stage jobs, gates, postrun checks and explicit wait/skip groups |
 | `enso-knowledge` | Finding and maintaining Markdown notes (in shared knowledge by default), links, imports, and user-defined formatting |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-skills` | Finding official optional skills and writing or refining a skill manually |
@@ -311,5 +311,5 @@ Everything that is not instructions or skills is configuration:
 | Which agent a workspace or job uses | `defaults`, workspace `WORKSPACE.md`, `JOB.md` |
 | Provider permissions | [Provider-native controls](configuration.md#provider-permissions-and-installation-trust) and `providers.<name>.args` |
 | Credentials for agents and jobs | [Encrypted secrets](configuration.md#secrets), supplied through the CLI or job declarations |
-| Scheduled work | [`JOB.md`](jobs.md) plus its prerun and postrun scripts |
+| Scheduled work | [`JOB.md`](jobs.md), its agent prompt or command, and optional gate/postrun scripts |
 | Projects and their stages | `enso workflow init` and workspace [`PROJECT.md`](configuration.md#projects); acceptance checks in stage definitions, agent instructions in the bound job's `JOB.md` |

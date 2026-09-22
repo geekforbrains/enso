@@ -19,6 +19,7 @@ from pathlib import Path
 
 from . import frontmatter, update_snapshot
 from .config import Paths, valid_workspace_name
+from .job_migration import job_executor_paths, migrate_job_executors
 from .knowledge.catalog import Note, scan_roots
 from .knowledge.links import extract_links
 from .maintenance import UpdateError, read_json, write_json
@@ -284,6 +285,9 @@ MIGRATIONS: tuple[Migration, ...] = (
     ),
     Migration(3, "retire conversation processing state", retire_history_paths, retire_history),
     Migration(4, "add encrypted secret storage", lambda paths: ("enso.db",), add_secret_store),
+    Migration(
+        5, "make job executors and concurrency explicit", job_executor_paths, migrate_job_executors
+    ),
 )
 
 

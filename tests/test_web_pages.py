@@ -62,7 +62,9 @@ def home(enso_home: Paths, raw_config: dict) -> Home:
     (default / "knowledge" / "sub").mkdir()
     (default / "knowledge" / "sub" / "deep.md").write_text("deep\n")
     write_job(
-        enso_home, prompt="Say hi to <b>everyone</b>.\n\n{{prerun_output}}", prerun="check.sh"
+        enso_home,
+        prompt="Say hi to <b>everyone</b>.\n\n{{gate_output}}",
+        gate={"command": "bash check.sh"},
     )
     write_job(enso_home, "broken", model="gpt")
     (enso_home.workspace_jobs("default") / "garbled").mkdir()
@@ -185,7 +187,7 @@ async def test_health_reports_every_section_database_and_log(
         assert f'id="section-{name}"' in body
     assert ">Viewer service</h2>" in body
     job_file = home.paths.workspace_jobs("default") / "broken" / "JOB.md"
-    assert f"broken ({job_file}): JOB.md.model &#39;gpt&#39; is not in providers" in body
+    assert f"broken ({job_file}): JOB.md.agent.model &#39;gpt&#39; is not in providers" in body
     assert "the service is not installed" in body
     assert "readable" in body and "enso.db " in body
     assert f"version {db.SCHEMA_VERSION}" in body
@@ -533,7 +535,7 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     assert 'href="/jobs/default%3Agarbled"' in body
     assert "<code>0 9 * * *</code>" in body and "<code>claude</code>" in body
     # A row says something is wrong with its dot; the job's page says what.
-    assert "JOB.md.model &#39;gpt&#39; is not in providers.claude.models" not in body
+    assert "JOB.md.agent.model &#39;gpt&#39; is not in providers.claude.models" not in body
     assert 'data-enabled="yes"' in body and 'data-status="error"' in body
     assert 'role="img" aria-label="failing or broken" title="failing or broken"' in body
     assert "<time datetime=" in body and "in " in body  # next run for the healthy job
@@ -559,8 +561,8 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     assert title(detail) == "Job default:nightly · Enso"
     assert '<div class="markdown">' in detail  # the prompt is JOB.md's body, rendered
     assert "<p>Say hi to &lt;b&gt;everyone&lt;/b&gt;.</p>" in detail
-    assert "{{prerun_output}}" in detail
-    assert "<code>check.sh</code> (120s timeout)" in detail and "Postrun" in detail
+    assert "{{gate_output}}" in detail
+    assert "<code>bash check.sh</code> (120s timeout)" in detail and "Postrun" in detail
     assert "900s" in detail and "transport default" in detail
     assert f'href="/runs/{home.ok_run}"' in detail and f'href="/runs/{home.failed_run}"' in detail
     assert (
@@ -700,7 +702,7 @@ async def test_reliability_uses_one_sample_within_the_global_scan(
 ) -> None:
     write_job(home.paths, "occasional")
     write_job(home.paths, "outside-scan")
-    outcomes = ["error", "timeout", "prerun_error"][:failed] + ["ok"] * (30 - failed)
+    outcomes = ["error", "timeout", "gate_error"][:failed] + ["ok"] * (30 - failed)
     samples = (
         [("nightly", "error", 90_000)]  # the 31st run must not affect counts or averages
         + [("nightly", status, 2_000) for status in outcomes]
@@ -720,9 +722,9 @@ async def test_reliability_uses_one_sample_within_the_global_scan(
         )
         con.executemany(
             """INSERT INTO runs
-               (id, job, workspace, provider, model, effort, trigger,
+               (id, job, workspace, kind, provider, model, effort, trigger,
                 started_at, duration_ms, status)
-               VALUES (?, ?, 'default', 'claude', 'opus', 'high', 'schedule', ?, ?, ?)""",
+               VALUES (?, ?, 'default', 'agent', 'claude', 'opus', 'high', 'schedule', ?, ?, ?)""",
             [
                 (
                     f"{index:012x}",
@@ -1015,3 +1017,49 @@ async def test_same_named_jobs_link_to_their_own_history(client, home):
     assert f'href="/runs/{team_run}"' in team and home.ok_run not in team
     assert f'href="/runs/{home.ok_run}"' in default and team_run not in default
     await page(client, "/jobs/nightly", status=404)
+
+
+async def test_command_job_and_run_show_executor_and_explicit_wait_policy(client, home):
+    write_job(
+        home.paths,
+        "refresh",
+        command="bash refresh.sh",
+        prompt="Refresh the reporting cache.",
+        concurrency={"group": "reporting", "on_busy": "wait", "max_wait": 300},
+        gate={"command": "bash collect.sh", "timeout": 30},
+        postrun={"command": "bash verify.sh", "timeout": 60},
+    )
+    job = load_job(home.paths, home.config, "refresh")
+    run_id = runs.start(home.paths, job, "manual", effort=None, kind="command")
+    runs.finish(home.paths, run_id, status="ok", output="Cache refreshed.", exit_code=0)
+    detail = await page(client, "/jobs/default%3Arefresh")
+    assert "Command · no model" in detail and "<code>bash refresh.sh</code>" in detail
+    assert "<code>reporting</code> · wait when busy · wait up to 300s" in detail
+    assert "<code>bash collect.sh</code> (30s timeout)" in detail
+    assert "<code>bash verify.sh</code> (60s timeout)" in detail
+    assert "Follow-up limit" not in detail and "<dt>Agent</dt>" not in detail
+    assert '<h2 id="prompt-head">Description</h2>' in detail
+    assert "Refresh the reporting cache." in detail
+
+    listed = await page(client, "/jobs")
+    row = re.search(
+        r'<a class="row entity" href="/jobs/default%3Arefresh".*?</a>', listed, re.DOTALL
+    )
+    assert row is not None and "Command" in row.group(0) and "None" not in row.group(0)
+    history = await page(client, "/runs?job=default%3Arefresh")
+    assert '<span class="mono">Command</span>' in history and "None/None" not in history
+    run = await page(client, f"/runs/{run_id}")
+    assert "Command · no model" in run and "Execution timeout" in run
+    assert "Cache refreshed." in run and "Provider time budget" not in run
+
+
+async def test_run_keeps_recorded_integration_kind_after_job_is_removed(client, home):
+    write_job(home.paths, "landing", command="true", prompt="")
+    job = load_job(home.paths, home.config, "landing")
+    run_id = runs.start(home.paths, job, "ready", effort=None, kind="integration")
+    runs.finish(home.paths, run_id, status="ok", exit_code=0)
+    job.path.unlink()
+    detail = await page(client, f"/runs/{run_id}")
+    assert "Integration · no model" in detail and "<dt>Agent</dt>" not in detail
+    rows = await page(client, "/runs?job=default%3Alanding")
+    assert '<span class="mono">Integration</span>' in rows and "None/None" not in rows

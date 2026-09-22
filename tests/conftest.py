@@ -6,6 +6,7 @@ import asyncio
 import copy
 import json
 import os
+import shlex
 import subprocess
 import sys
 from collections.abc import Awaitable, Callable, Iterable
@@ -350,9 +351,7 @@ def runtime(fake_config: Config) -> Runtime:
 JOB_FIELDS: dict[str, object] = {
     "name": "Nightly",
     "schedule": "0 9 * * *",
-    "provider": "claude",
-    "model": "opus",
-    "effort": "high",
+    "agent": {"provider": "claude", "model": "opus", "effort": "high"},
     "enabled": True,
 }
 
@@ -373,8 +372,37 @@ def write_job(
     a strict parser must refuse. ``omit`` drops fields entirely, which is not the same as
     giving one an empty value.
     """
-    given = {**JOB_FIELDS, **fields}
-    front = {key: value for key, value in given.items() if key not in set(omit)}
+    # Ergonomic provider/script keywords keep execution tests focused on behavior while
+    # every generated file uses the current schema. Parser tests render malformed fields
+    # directly instead of teaching this helper to emit obsolete syntax.
+    given = copy.deepcopy(JOB_FIELDS)
+    agent_fields = {
+        key: fields.pop(key)
+        for key in ("provider", "model", "effort", "max_followups")
+        if key in fields
+    }
+    if agent_fields:
+        given["agent"].update(agent_fields)
+    if "command" in fields or {"provider", "model", "effort"}.issubset(omit):
+        given.pop("agent", None)
+    for old, new in (("prerun", "gate"), ("postrun", "postrun")):
+        value = fields.pop(old, None)
+        timeout = fields.pop(f"{old}_timeout", None)
+        hook = {"command": f"bash {shlex.quote(value)}"} if isinstance(value, str) else value
+        if hook is not None:
+            if timeout is not None and isinstance(hook, dict):
+                hook["timeout"] = timeout
+            fields[new] = hook
+    if "concurrency_group" in fields:
+        fields["concurrency"] = {"group": fields.pop("concurrency_group"), "on_busy": "skip"}
+    given.update(fields)
+    for key in omit:
+        if key in ("provider", "model", "effort", "max_followups") and "agent" in given:
+            given["agent"].pop(key, None)
+        else:
+            given.pop(key, None)
+    front = given
+    prompt = prompt.replace("{{prerun_output}}", "{{gate_output}}")
     path = paths.workspace_jobs(workspace) / dir_name / "JOB.md"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(render(front, prompt))

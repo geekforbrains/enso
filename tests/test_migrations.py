@@ -8,7 +8,7 @@ import sqlite3
 
 import pytest
 
-from enso import db, knowledge, migrations, update_snapshot
+from enso import db, frontmatter, job_migration, knowledge, migrations, runs, update_snapshot
 from enso.maintenance import UpdateError, write_json
 
 
@@ -418,9 +418,30 @@ CREATE TABLE _enso_memory_batches (
 """
 
 
+OLD_RUNS = """
+CREATE TABLE runs (
+  id TEXT PRIMARY KEY, job TEXT NOT NULL, workspace TEXT NOT NULL,
+  provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT NOT NULL,
+  trigger TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration_ms INTEGER,
+  status TEXT NOT NULL, exit_code INTEGER, output TEXT, error TEXT,
+  session_id TEXT, postrun_error TEXT);
+CREATE INDEX runs_job ON runs (workspace, job, started_at DESC);
+CREATE TRIGGER _enso_runs_delete_attempts AFTER DELETE ON runs
+BEGIN DELETE FROM _enso_run_attempts WHERE run_id = OLD.id; END;
+"""
+
+
+def old_job_database(paths):
+    """Use schema 3's real nonnullable history shape, not a current table with an old marker."""
+    db.initialize(paths)
+    with sqlite3.connect(paths.db) as connection:
+        connection.executescript("DROP TABLE runs; DROP TABLE _enso_job_waiters;" + OLD_RUNS)
+        connection.execute("PRAGMA user_version = 3")
+
+
 @pytest.fixture
 def prior_home(enso_home):
-    db.initialize(enso_home)
+    old_job_database(enso_home)
     write_json(enso_home.home / migrations.MARKER, {"revision": 2})
     with sqlite3.connect(enso_home.db) as connection:
         connection.executescript("DROP TABLE _enso_received_messages;" + HISTORY_SCHEMA)
@@ -482,6 +503,8 @@ def prior_home(enso_home):
             }
         },
     )
+    digest = enso_home.workspace_jobs("team") / "digest/JOB.md"
+    digest.write_text(LEGACY_JOB)
     return enso_home
 
 
@@ -492,7 +515,6 @@ def test_upgrade_retires_processing_state_and_jobs_but_preserves_notes(prior_hom
         for name in (
             "workspaces/team/memory/Keep.md",
             "shared/knowledge/Memory/2026-09-20.md",
-            "workspaces/team/jobs/digest/JOB.md",
         )
     ]
     before = {path: path.read_bytes() for path in kept}
@@ -501,6 +523,9 @@ def test_upgrade_retires_processing_state_and_jobs_but_preserves_notes(prior_hom
     migrations.apply(paths)
     assert migrations.read_revision(paths) == migrations.latest_revision()
     assert {path: path.read_bytes() for path in kept} == before
+    assert (
+        frontmatter.read(paths.workspace_jobs("team") / "digest/JOB.md").body == "Keep this prompt."
+    )
     assert not (paths.skills / "enso-memory").exists()
     assert not (paths.workspace_jobs("team") / "enso-memory").exists()
     assert not (paths.workspace_jobs("default") / "memory").exists()
@@ -579,3 +604,313 @@ def test_retirement_retries_after_filesystem_failure(prior_home, monkeypatch):
     migrations.apply(prior_home)
     assert migrations.read_revision(prior_home) == migrations.latest_revision()
     assert not (prior_home.skills / "enso-memory").exists()
+
+
+LEGACY_JOB = """---
+name: Custom report
+schedule: '0 * * * *'
+provider: claude
+model: sonnet
+effort: high
+enabled: false
+---
+
+Keep this prompt.
+"""
+
+
+def legacy_job(paths, *, workspace="default", name="report", fields=None, body=None):
+    file = paths.workspace_jobs(workspace) / name / "JOB.md"
+    file.parent.mkdir(parents=True, exist_ok=True)
+    document, _ = frontmatter.parse(LEGACY_JOB)
+    values = document.fields | (fields or {})
+    file.write_text(frontmatter.render(values, document.body if body is None else body))
+    return file
+
+
+def test_job_migration_converts_every_workspace_preserving_scripts_and_prompt(enso_home):
+    step = migrations.MIGRATIONS[4]
+    old_job_database(enso_home)
+    first = legacy_job(
+        enso_home,
+        fields={
+            "prerun": "scripts/collect report.sh",
+            "prerun_timeout": 47,
+            "postrun": "verify's report.sh",
+            "postrun_timeout": 51,
+            "max_followups": 4,
+            "concurrency_group": "reporting",
+            "secrets": ["REPORT_TOKEN"],
+        },
+        body="  Fetch:\n\n{{prerun_output}}\n\nKeep user instructions.",
+    )
+    second = legacy_job(enso_home, workspace="disabled", name="nightly")
+    script = first.parent / "custom.sh"
+    script.write_text("printf 'leave me alone'; exit 1\n")
+    original = script.read_bytes()
+    before = first.read_text().partition("\n---\n")[2]
+    first.chmod(0o640)
+    assert step.paths(enso_home) == (
+        "enso.db",
+        ".bundles.json",
+        "workspaces/default/jobs",
+        "workspaces/disabled/jobs",
+    )
+    assert "provider: claude" in first.read_text()  # preview is read-only
+    step.apply(enso_home)
+    document = frontmatter.read(first)
+    assert document.fields == {
+        "name": "Custom report",
+        "schedule": "0 * * * *",
+        "enabled": False,
+        "secrets": ["REPORT_TOKEN"],
+        "agent": {"provider": "claude", "model": "sonnet", "effort": "high", "max_followups": 4},
+        "gate": {"command": "bash 'scripts/collect report.sh'", "timeout": 47},
+        "postrun": {"command": "bash 'verify'\"'\"'s report.sh'", "timeout": 51},
+        "concurrency": {"group": "reporting", "on_busy": "skip"},
+    }
+    assert first.read_text().partition("\n---\n")[2] == before.replace(
+        "{{prerun_output}}", "{{gate_output}}"
+    )
+    assert first.stat().st_mode & 0o777 == 0o640
+    assert frontmatter.read(second).fields["agent"]["provider"] == "claude"
+    assert script.read_bytes() == original
+    after = {path: path.read_bytes() for path in (first, second, script)}
+    step.apply(enso_home)
+    assert {path: path.read_bytes() for path in after} == after
+
+
+def test_job_migration_preserves_project_command_and_integration_ownership(enso_home):
+    definition = enso_home.project("default", "EN") / "PROJECT.md"
+    definition.parent.mkdir(parents=True)
+    definition.write_text(
+        frontmatter.render(
+            {
+                "name": "Enso",
+                "stages": [
+                    "build",
+                    {"name": "test", "command": "bash check.sh"},
+                    {"name": "merge", "integrate": True},
+                ],
+            },
+            "User project description.",
+        )
+    )
+    files = [
+        legacy_job(enso_home, name=stage, fields={"project": "EN", "stage": stage})
+        for stage in ("build", "test", "merge")
+    ]
+    before = definition.read_bytes()
+    migrations.MIGRATIONS[4].apply(enso_home)
+    assert "agent" in frontmatter.read(files[0]).fields
+    for file in files[1:]:
+        fields = frontmatter.read(file).fields
+        assert "agent" not in fields and "command" not in fields and "provider" not in fields
+        assert fields["project"] == "EN"
+    assert definition.read_bytes() == before
+    migrations.MIGRATIONS[4].apply(enso_home)
+
+
+def test_job_migration_rebuilds_history_without_losing_attempts_or_user_objects(enso_home):
+    old_job_database(enso_home)
+    with sqlite3.connect(enso_home.db) as connection:
+        connection.executescript(
+            "CREATE TABLE user_history (value TEXT);"
+            "INSERT INTO user_history VALUES ('keep');"
+            "CREATE VIEW user_run_view AS SELECT id, status FROM runs;"
+            "CREATE INDEX user_run_status ON runs(status);"
+            "CREATE TRIGGER user_run_deleted AFTER DELETE ON runs BEGIN "
+            "INSERT INTO user_history VALUES (OLD.id); END;"
+        )
+        for number, provider in enumerate(("claude", "command")):
+            connection.execute(
+                "INSERT INTO runs (id, job, workspace, provider, model, effort, trigger, "
+                "started_at, status, output)"
+                " VALUES (?, 'report', 'default', ?, 'model', 'high', 'manual', 'now', "
+                "'prerun_error', 'kept')",
+                (str(number), provider),
+            )
+            connection.execute(
+                "INSERT INTO _enso_run_attempts (run_id, number, status, output, error, "
+                "postrun_output, postrun_error) "
+                "VALUES (?, 0, 'prerun_error', 'attempt', 'error', '', '')",
+                (str(number),),
+            )
+    migrations.MIGRATIONS[4].apply(enso_home)
+    with db.reader(enso_home) as connection:
+        assert [
+            tuple(row)
+            for row in connection.execute(
+                "SELECT kind, provider, model, effort, status, output FROM runs ORDER BY id"
+            )
+        ] == [
+            ("agent", "claude", "model", "high", "gate_error", "kept"),
+            ("command", None, None, None, "gate_error", "kept"),
+        ]
+        assert connection.execute("SELECT count(*) FROM user_run_view").fetchone()[0] == 2
+        assert connection.execute("SELECT value FROM user_history").fetchone()[0] == "keep"
+        assert connection.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert runs.attempts(enso_home, "0")[0].status == "gate_error"
+    with db.transaction(enso_home) as connection:
+        connection.execute(
+            "INSERT INTO _enso_job_waiters(run_id, workspace, job, group_name) "
+            "VALUES ('0', 'default', 'report', 'reporting')"
+        )
+        connection.execute("DELETE FROM runs WHERE id = '0'")
+        assert connection.execute("SELECT count(*) FROM _enso_job_waiters").fetchone()[0] == 0
+        assert connection.execute("SELECT count(*) FROM _enso_run_attempts").fetchone()[0] == 1
+        assert (
+            connection.execute("SELECT value FROM user_history ORDER BY rowid DESC").fetchone()[0]
+            == "0"
+        )
+    migrations.MIGRATIONS[4].apply(enso_home)
+
+
+@pytest.mark.parametrize("conflict", ["duplicate", "mixed", "symlink", "oversized"])
+def test_job_migration_preflights_all_jobs_before_changing_any(enso_home, tmp_path, conflict):
+    old_job_database(enso_home)
+    first = legacy_job(enso_home, name="aaa")
+    bad = legacy_job(enso_home, name="zzz")
+    if conflict == "duplicate":
+        bad.write_text(LEGACY_JOB.replace("enabled: false", "enabled: false\nenabled: true"))
+    elif conflict == "mixed":
+        bad.write_text(LEGACY_JOB.replace("enabled: false", "enabled: false\ncommand: echo hi"))
+    elif conflict == "symlink":
+        outside = tmp_path / "outside.md"
+        bad.rename(outside)
+        bad.symlink_to(outside)
+    else:
+        bad.write_text(LEGACY_JOB + "x" * job_migration._MAX_DOCUMENT)
+    before = first.read_bytes()
+    for action in (migrations.MIGRATIONS[4].paths, migrations.MIGRATIONS[4].apply):
+        with pytest.raises(UpdateError):
+            action(enso_home)
+        assert first.read_bytes() == before
+        with sqlite3.connect(enso_home.db) as connection:
+            assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_job_migration_retries_partial_files_and_preserves_bundle_receipts(enso_home, monkeypatch):
+    import hashlib
+
+    old_job_database(enso_home)
+    files = [legacy_job(enso_home, name=name) for name in ("aaa", "bbb")]
+    receipt = {
+        file.relative_to(enso_home.home).as_posix(): hashlib.sha256(file.read_bytes()).hexdigest()
+        for file in files
+    }
+    write_json(enso_home.home / ".bundles.json", {"files": receipt})
+    write_json(enso_home.home / migrations.MARKER, {"revision": 4})
+    publish = job_migration.write_bytes
+
+    def fail_second(path, content, **kwargs):
+        if path == files[1]:
+            raise OSError("injected disk failure")
+        publish(path, content, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(job_migration, "write_bytes", fail_second)
+        with pytest.raises(UpdateError, match="injected disk failure"):
+            migrations.apply(enso_home)
+    assert migrations.read_revision(enso_home) == 4
+    assert "agent" in frontmatter.read(files[0]).fields
+    assert "provider" in frontmatter.read(files[1]).fields
+    migrations.apply(enso_home)
+    assert migrations.read_revision(enso_home) == 5
+    receipts = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    for file in files:
+        assert (
+            receipts[file.relative_to(enso_home.home).as_posix()]
+            == hashlib.sha256(file.read_bytes()).hexdigest()
+        )
+
+
+def test_job_migration_converts_only_known_bundled_release_check(enso_home):
+    fields = frontmatter.parse(LEGACY_JOB)[0].fields | {
+        "name": "Enso release check",
+        "prerun": "prerun.sh",
+        "catch_up": True,
+    }
+    files = []
+    for workspace in ("default", "custom"):
+        file = legacy_job(
+            enso_home,
+            workspace=workspace,
+            name="enso-update",
+            fields=fields,
+            body=job_migration._UPDATE_BODY,
+        )
+        script = file.parent / "prerun.sh"
+        script.write_bytes(
+            job_migration._UPDATE_SCRIPT + (b"# Customized\n" if workspace == "custom" else b"")
+        )
+        files.append(file)
+    migrations.MIGRATIONS[4].apply(enso_home)
+    converted = frontmatter.read(files[0]).fields
+    assert converted["command"] == "enso update check --notify --quiet"
+    assert converted["enabled"] is False and converted["schedule"] == "0 * * * *"
+    assert "agent" not in converted and "gate" not in converted
+    assert not (files[0].parent / "prerun.sh").exists()
+    custom = frontmatter.read(files[1]).fields
+    assert "command" not in custom and "agent" in custom and "gate" in custom
+    assert (files[1].parent / "prerun.sh").is_file()
+
+
+def test_job_migration_snapshot_restores_database_and_jobs(enso_home, tmp_path):
+    old_job_database(enso_home)
+    file = legacy_job(enso_home)
+    before = file.read_bytes()
+    operation = tmp_path / "operation"
+    operation.mkdir()
+    step = migrations.MIGRATIONS[4]
+    names = update_snapshot.plan(enso_home, [*step.paths(enso_home), "enso.db-wal", "enso.db-shm"])
+    update_snapshot.capture(enso_home, operation, names)
+    step.apply(enso_home)
+    update_snapshot.restore(enso_home, operation)
+    assert file.read_bytes() == before
+    with sqlite3.connect(enso_home.db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert "kind" not in [row[1] for row in connection.execute("PRAGMA table_info(runs)")]
+    step.apply(enso_home)
+
+
+@pytest.mark.parametrize("customized", ["script", "deleted-script", "prompt"])
+def test_job_migration_and_bundle_refresh_preserve_custom_release_checks(enso_home, customized):
+    import hashlib
+
+    from enso import workspaces
+    from enso.config import Agent
+
+    file = legacy_job(
+        enso_home,
+        name="enso-update",
+        fields={"name": "Enso release check", "prerun": "prerun.sh", "catch_up": True},
+        body=job_migration._UPDATE_BODY,
+    )
+    script = file.parent / "prerun.sh"
+    script.write_bytes(job_migration._UPDATE_SCRIPT)
+    receipts = {
+        path.relative_to(enso_home.home).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in (file, script)
+    }
+    write_json(enso_home.home / ".bundles.json", {"files": receipts})
+    if customized == "script":
+        script.write_bytes(script.read_bytes() + b"# Operator customization\n")
+    elif customized == "deleted-script":
+        script.unlink()
+    else:
+        file.write_text(file.read_text() + "\nOperator-owned instructions.\n")
+    expected_script = script.read_bytes() if script.exists() else None
+    for _ in range(2):
+        migrations.MIGRATIONS[4].apply(enso_home)
+    migrated = file.read_bytes()
+    for _ in range(2):
+        workspaces.reconcile_bundles(enso_home, Agent("claude", "opus", "high"))
+    assert file.read_bytes() == migrated
+    assert frontmatter.read(file).fields["gate"]["command"] == "bash prerun.sh"
+    assert "command" not in frontmatter.read(file).fields
+    assert (script.read_bytes() if script.exists() else None) == expected_script
+    retained = json.loads((enso_home.home / ".bundles.json").read_text())["files"]
+    name = file.relative_to(enso_home.home).as_posix()
+    assert retained[name] == receipts[name]
+    assert script.relative_to(enso_home.home).as_posix() not in retained

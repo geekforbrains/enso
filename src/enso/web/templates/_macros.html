@@ -75,14 +75,14 @@
    belongs on the run's own page rather than in a list. #}
 {% macro run_row(run, title=None) -%}
 <a class="row{{ ' quiet' if run.status in ('no_work', 'skipped') }}" href="{{ run.href if run.href is defined else '/runs/' ~ run.id|urlencode }}" data-row
-   data-text="{{ (run.id ~ ' ' ~ run.job ~ ' ' ~ (run.title|default('')) ~ ' ' ~ (run.source|default('jobs')) ~ ' ' ~ run.workspace ~ ' ' ~ run.provider ~ ' ' ~ run.model ~ ' ' ~ run.effort ~ ' ' ~ run.status ~ ' ' ~ run.trigger ~ ' ' ~ (run.error_preview or ''))|lower }}">
+   data-text="{{ (run.id ~ ' ' ~ run.job ~ ' ' ~ (run.title|default('')) ~ ' ' ~ (run.source|default('jobs')) ~ ' ' ~ run.workspace ~ ' ' ~ run.kind ~ ' ' ~ (run.provider or '') ~ ' ' ~ (run.model or '') ~ ' ' ~ (run.effort or '') ~ ' ' ~ run.status ~ ' ' ~ run.trigger ~ ' ' ~ (run.error_preview or ''))|lower }}">
   <span class="at">{{ time(run.started_at) }}</span>
   <span class="pin {{ run.status|status_class }}" role="img" aria-label="{{ run.status|status_word }}" title="{{ run.status|status_word }}"></span>
   <span class="body">
     <span class="title">{{ title if title is not none else (run.title if run.title is defined else run.job) }}</span>
     <span class="detail">
       {% if run.source is defined and run.source == 'heartbeat' %}<span>heartbeat · {{ run.job }}</span>{% endif %}
-      <span class="mono">{{ run.provider }}/{{ run.model }}</span>
+      <span class="mono">{% if run.kind == 'agent' %}{{ run.provider }}/{{ run.model }}{% else %}{{ run.kind|capitalize }}{% endif %}</span>
       <span>{{ run.workspace }}</span>
     </span>
   </span>

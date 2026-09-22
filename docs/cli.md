@@ -523,28 +523,33 @@ Job and run lists use the [selected workspace](#workspace-context-in-020), with
 
 ```text
 enso job list [--workspace W] [--all-workspaces] [--json]
-enso job create --name N --provider P --model M --effort E [--workspace W] [--schedule S] [--project KEY --stage NAME] [--json]
+enso job create --name N [--provider P --model M --effort E | --command COMMAND] [--workspace W] [--schedule S] [--project KEY --stage NAME] [--concurrency-group GROUP --on-busy wait|skip [--max-wait SECONDS]] [--json]
 enso job show WORKSPACE:JOB [--json]
 enso job run WORKSPACE:JOB [--json]
 enso runs list [--job WORKSPACE:JOB] [--workspace W] [--all-workspaces] [-n N] [--json]
 enso runs show ID [--json]
 ```
 
-`job create` needs `--name --provider --model --effort`, a workspace selected by
-`--workspace` or `ENSO_WORKSPACE`, and either `--schedule`
+`job create` needs `--name`, either an agent (`--provider --model --effort`) or a
+`--command`, a workspace selected by `--workspace` or `ENSO_WORKSPACE`, and either `--schedule`
 (five-field cron) or `--project KEY --stage NAME`, which make a [stage job](jobs.md#stage-jobs)
-and leave `--schedule` optional. It creates no job files when one of them is invalid. Like
+and leave `--schedule` optional. Command/integration stage bindings omit agent flags and
+`--command`: their project owns execution. `--concurrency-group` requires `--on-busy wait`
+or `--on-busy skip`; `--max-wait` is optional positive seconds for `wait` only. The file uses
+the nested blocks documented in [Jobs](jobs.md#the-frontmatter).
+It creates no job files when one of them is invalid. Like
 the other job commands, it initializes the database before validating the job.
 `job run --json` prints `{"ok", "status", "run_id", "output", "error", "exit_code",
 "postrun_error", "session_id", "task"}` for an executed or skipped trigger (`task` is the
 reference a [stage job](jobs.md#stage-jobs) claimed, else `null`) and exits 1 unless the final status is
 `ok` or `no_work`. A failed postrun fills `postrun_error` and changes an otherwise `ok`,
-`no_work`, or `skipped` result to `error`; primary provider/prerun failures keep their status.
-The provider/prerun `exit_code` stays distinct from the hook's exit code. Plain output prints
+`no_work`, or `skipped` result to `error`; primary executor/gate failures keep their status.
+The executor/gate `exit_code` stays distinct from the hook's exit code. Plain output prints
 the hook diagnostic on stderr. A per-job lock collision has `status: "skipped"` and
-`run_id: null`; a group collision has a run ID and runs its reaction hook. Configuration,
+`run_id: null`; a skipped group admission has a run ID and runs its reaction hook. A `wait`
+policy can keep the manual command open until admission or its configured deadline. Configuration,
 database initialization, job validation, and lookup failures use the error object described
-above. `JOB.md` can override the default two postrun follow-ups with `max_followups`;
+above. `JOB.md` can override the default two postrun follow-ups with `agent.max_followups`;
 see [Jobs](jobs.md#postrun-scripts).
 
 `job create`, `job show`, and parsed entries in `job list --json` include `ref`
@@ -552,10 +557,11 @@ see [Jobs](jobs.md#postrun-scripts).
 carry `ref` and `problems`.
 
 `runs list --json` returns the retained run rows, with qualified `job`, including final `session_id` and
-`postrun_error` (null when absent). `runs show --json` adds an ordered `attempts` array,
+`postrun_error` (null when absent), and `kind` (`agent`, `command`, or `integration`).
+Non-agent rows have null provider, model and effort fields. `runs show --json` adds an ordered `attempts` array,
 whose entries carry `number`, `status`, `exit_code`, `output`, `error`, `session_id`,
-`duration_ms`, `postrun_exit_code`, `postrun_output`, and `postrun_error`. Provider turns
-start at 1; a reaction hook when no provider ran uses attempt 0. Plain `runs show` displays
+`duration_ms`, `postrun_exit_code`, `postrun_output`, and `postrun_error`. Execution attempts
+start at 1; a reaction hook when no executor ran uses attempt 0. Plain `runs show` displays
 these attempts too. History from before attempt recording was added has an empty array.
 
 ## Tasks and projects

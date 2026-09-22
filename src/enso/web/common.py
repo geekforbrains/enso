@@ -16,7 +16,7 @@ from ..config import Config, Paths, Stage, check_config
 from . import filters
 from . import heartbeat as beatviews
 
-FAILED = ("error", "timeout", "prerun_error", "cancelled")
+FAILED = ("error", "timeout", "gate_error", "cancelled")
 ACTIVITY_HOURS = 24  # the shared attention window and Today activity history
 
 

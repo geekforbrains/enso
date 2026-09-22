@@ -55,6 +55,44 @@ They preserve installed bundles and use the release snapshot helpers for recover
 already applied to a live development home must not be edited and replayed; append the next
 revision, and use disposable old-layout fixtures when testing a step repeatedly.
 
+## Job format migration
+
+Home revision **5** brings every existing workspace's jobs, including disabled jobs, to
+the [current `JOB.md` format](jobs.md). Managed `enso update apply` runs it as part of the
+normal snapshotted update. For an editable installation, preview with
+`scripts/dev-migrate` and explicitly apply with `scripts/dev-migrate --apply`, as described
+in [Development](development.md#manual-development-migrations). Routine source refresh
+does not perform this conversion.
+
+The conversion:
+
+- Moves provider, model, effort and follow-up settings into `agent`.
+- Renames `prerun` to `gate`, writes explicit `bash <quoted-script-path>` hook commands
+  with their timeouts, and replaces `{{prerun_output}}` with `{{gate_output}}`.
+- Converts `concurrency_group` to `concurrency` with explicit `on_busy: skip`, preserving
+  existing contention behavior. Choose `wait` yourself for jobs that should take turns.
+- Converts the recognized, unchanged bundled release checker into a direct command job,
+  retaining its enabled state and schedule and removing its obsolete, matching gate script.
+- Upgrades SQLite to schema **4**, adding executor identity and transient group waiters.
+  Historical command-sentinel agent fields become null, genuine agent settings are retained,
+  and `prerun_error` becomes `gate_error` in run and attempt history. Existing historical
+  `no_work` outcomes are not reinterpreted as successful commands.
+
+YAML frontmatter is normalized, so YAML comments and its original formatting are not
+preserved. Markdown body whitespace and line endings are preserved apart from the gate
+placeholder replacement, and file permissions are retained. Custom scripts are not edited.
+A custom script that does useful work and always exits `1` stays a gate; the migration
+cannot infer its intent. Convert such a job explicitly to `command` after reviewing it.
+Bundled receipts are adjusted only when their prior recorded hashes match, so edited
+content does not become a falsely pristine baseline.
+
+Preflight rejects malformed YAML, conflicting old/new fields, missing executors,
+unresolved stage definitions, symbolic links and oversized job documents before changing
+jobs or the database. It names the conflicting file for repair rather than guessing.
+Files are replaced atomically, and the enclosing migration snapshot protects rollback
+across both files and database changes. Reapplying an interrupted conversion recognizes
+already-converted files. Fresh installs already use the new format.
+
 ## Declare everything the step changes
 
 `plan(paths)` calls each pending step's `paths` function without changing the home. These

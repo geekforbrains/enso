@@ -44,7 +44,13 @@ def workflow_config(paths: Paths, raw: dict, stages: list, **project_fields: obj
 
 
 def stage_job(paths: Paths, config: Config, *, name: str = "work", **fields: object):
-    write_job(paths, name, omit=["schedule"], project="EN", stage=name, **fields)
+    definition = config.projects["EN"].stage(name)
+    omit = (
+        ["schedule"]
+        if definition.command is None and not definition.integrate
+        else ["schedule", "agent"]
+    )
+    write_job(paths, name, omit=omit, project="EN", stage=name, **fields)
     return load_job(paths, config, name)
 
 
@@ -145,6 +151,7 @@ async def test_failed_check_repairs_with_actual_feedback_before_acceptance(
         prompt = str(args[1])
         prompts.append(prompt)
         if len(prompts) == 2:
+            assert kwargs["session_id"] == "stage-session"
             assert "repair-required" in prompt
             assert "Task: EN-001" in prompt
             assert tasks.get(enso_home, task.ref).stage == "work"
@@ -152,7 +159,7 @@ async def test_failed_check_repairs_with_actual_feedback_before_acceptance(
         env = kwargs["env"]
         assert isinstance(env, dict)
         submit(enso_home, config, env)
-        return ProviderTurn("ok", output="success", exit_code=0)
+        return ProviderTurn("ok", output="success", exit_code=0, session_id="stage-session")
 
     monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
     result = await JobRunner(config).run(stage_job(enso_home, config), trigger="manual")
@@ -215,6 +222,43 @@ fi
     assert [attempt.number for attempt in attempts] == [1, 2, 3]
     assert [attempt.postrun_exit_code for attempt in attempts] == [0, 10, 0]
     assert tasks.get(enso_home, task.ref).stage == "done"
+
+
+async def test_failed_workflow_check_cannot_start_a_fresh_repair_session(
+    enso_home, raw_config, monkeypatch
+):
+    config = workflow_config(
+        enso_home,
+        raw_config,
+        [{"name": "work", "checks": [{"name": "tests", "command": "exit 1"}]}],
+    )
+    task = tasks.create(enso_home, config, "EN", "Repair safely", actor="user:test")
+    calls = []
+
+    async def turn(*args, **kwargs):
+        calls.append(kwargs.get("session_id"))
+        submit(enso_home, config, kwargs["env"])
+        return ProviderTurn("ok", output="candidate", exit_code=0)
+
+    monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
+    result = await JobRunner(config).run(stage_job(enso_home, config), trigger="manual")
+    assert result.status == "error" and "no resumable session" in result.error
+    assert calls == [None]
+    assert tasks.get(enso_home, task.ref).claim_run_id is None
+
+
+async def test_failing_stage_command_still_runs_postrun(enso_home, raw_config):
+    config = workflow_config(enso_home, raw_config, [{"name": "work", "command": "exit 3"}])
+    task = tasks.create(enso_home, config, "EN", "Check failed command", actor="user:test")
+    job = stage_job(
+        enso_home,
+        config,
+        postrun={"command": 'printf "%s:%s" "$ENSO_RUN_STATUS" "$ENSO_RUN_EXIT_CODE" > seen.txt'},
+    )
+    result = await JobRunner(config).run(job, trigger="manual")
+    assert (result.status, result.exit_code) == ("error", 3)
+    assert (job.job_dir / "seen.txt").read_text() == "error:3"
+    assert tasks.get(enso_home, task.ref).claim_run_id is None
 
 
 async def test_provider_error_after_submission_never_accepts(
@@ -488,7 +532,14 @@ async def test_project_scripts_and_stage_run_keep_their_workspace(enso_home, raw
     config = load_config(enso_home)
     db.initialize(enso_home)
     task = tasks.create(enso_home, config, "TEAM", "Run in team", actor="user:test")
-    write_job(enso_home, "work", workspace="team", project="TEAM", stage="work", omit=["schedule"])
+    write_job(
+        enso_home,
+        "work",
+        workspace="team",
+        project="TEAM",
+        stage="work",
+        omit=["schedule", "agent"],
+    )
     good = load_job(enso_home, config, "team:work")
     bad_path = write_job(enso_home, "work", project="TEAM", stage="work", omit=["schedule"])
     _, problems = parse_job(bad_path, config)
@@ -788,7 +839,7 @@ async def test_recover_releases_the_claims_of_runs_that_never_ended(
     runner = JobRunner(stage_config, {"slack": FakeTransport()})
     job = dev_job(enso_home, stage_config)
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
-    dead = runs.start(enso_home, job, "ready", effort=job.effort)
+    dead = runs.start(enso_home, job, "ready", effort="high")
     assert tasks.take(enso_home, stage_config, "EN", "triage", run_id=dead, actor="job:default:dev")
     assert not tasks.ready(enso_home, stage_config, "EN", "triage")
 
@@ -818,7 +869,7 @@ def test_job_create_and_run_from_the_terminal_for_a_stage(
     assert result.exit_code == 0, result.output
     created = json.loads(result.stdout)
     assert (created["schedule"], created["project"], created["stage"]) == (None, "EN", "todo")
-    assert created["group"] is None
+    assert created["concurrency"] is None
     result = cli.invoke(
         app,
         ["job", "create", "--name", "Plain", "--provider", "claude", "--model", "opus",
@@ -834,7 +885,7 @@ def test_job_create_and_run_from_the_terminal_for_a_stage(
     job_file.write_text(job_file.read_text().replace("enabled: false", "enabled: true"))
     ran = cli.invoke(app, ["job", "run", "default:dev-todo"])
     assert ran.exit_code == 0
-    assert ran.stdout == "no work (no task is ready in EN/todo); the provider was not run\n"
+    assert ran.stdout == "no work (no task is ready in EN/todo); execution did not start\n"
     tasks.create(enso_home, stage_config, "EN", "Fix fences", actor="user:gavin")
     tasks.move(
         enso_home, stage_config, "EN-001", "advance", actor="user:gavin", run_id=None, message="m"

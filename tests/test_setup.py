@@ -41,12 +41,15 @@ def test_seed_jobs_stamps_the_agent_and_writes_once(enso_home: Paths) -> None:
     done = workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high"))
     assert done == [
         f"wrote {enso_home.workspace_jobs('default') / job / name}"
-        for job in workspaces.BUNDLED_JOBS
-        for name in ("JOB.md", "prerun.sh")
+        for job, name in (
+            ("enso-audit", "JOB.md"),
+            ("enso-audit", "prerun.sh"),
+            ("enso-update", "JOB.md"),
+        )
     ]
     text = (job_dir / "JOB.md").read_text()
-    assert 'provider: "claude"\nmodel: "opus"\neffort: "high"\n' in text
-    assert re.findall(r"\{\{\w+\}\}", text) == ["{{prerun_output}}"]  # the runner's, kept
+    assert 'agent:\n  provider: "claude"\n  model: "opus"\n  effort: "high"\n' in text
+    assert re.findall(r"\{\{\w+\}\}", text) == ["{{gate_output}}"]  # the runner's, kept
     assert workspaces.seed_jobs(enso_home, Agent("claude", "opus", "high")) == []
     (job_dir / "JOB.md").write_text(text.replace("enabled: true", "enabled: false"))
     (job_dir / "prerun.sh").unlink()
@@ -88,7 +91,7 @@ def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
                 expected = expected.replace(placeholder, value)
             relative = Path("workspaces/default") / relative
         assert (enso_home.home / relative).read_text() == expected
-        assert set(re.findall(r"\{\{\w+\}\}", expected)) <= {"{{prerun_output}}"}
+        assert set(re.findall(r"\{\{\w+\}\}", expected)) <= {"{{gate_output}}"}
     stamped = (
         (bundled / template)
         .read_text()
@@ -160,8 +163,9 @@ def test_setup_wizard_slack_path(enso_home: Paths, monkeypatch: pytest.MonkeyPat
     )
     assert "reports problems to your notify target" in summary
     assert "enso job show default:enso-audit" in summary
-    assert (job.provider, job.model, job.effort) == ("claude", "opus", "high")  # the wizard's
-    assert job.enabled and job.workspace == "default" and job.prerun == "prerun.sh"
+    assert job.agent is not None and job.gate is not None
+    assert (job.agent.provider, job.agent.model, job.agent.effort) == ("claude", "opus", "high")
+    assert job.enabled and job.workspace == "default" and job.gate.command == "bash prerun.sh"
     assert installs == [enso_home]
     assert CliRunner().invoke(app, ["setup"]).exit_code == 1  # fresh homes only
 

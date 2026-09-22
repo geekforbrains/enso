@@ -302,7 +302,7 @@ unavailable as described in [Connections](connections.md#access-in-020).
 
 `defaults` names the provider, model, and effort every conversation uses unless the
 workspace or a temporary chat selection overrides it, and all three keys are required.
-Each provider-backed job supplies its own triple in `JOB.md`; changing chat defaults or a
+Each agent job supplies its own triple in `JOB.md.agent`; changing chat defaults or a
 workspace's `agent` does not change an existing job. Command and integration stages omit
 the triple because they do not invoke a provider.
 
@@ -337,7 +337,7 @@ The provider controls loading, trust requirements, and enforcement. Enso neither
 nor inspects these files or provider trust settings, and the workspace audit leaves them
 alone. Configure and verify permissions with the provider itself.
 
-Job prerun/postrun scripts, heartbeat gates, command/integration stages, workflow checks,
+Job commands and gate/postrun scripts, heartbeat gates, command/integration stages, workflow checks,
 and lifecycle scripts run with the service account's access, outside provider policies.
 Transport authentication, pairing, admission checks, input validation, safe file handling,
 subprocess limits, and authorization for external actions remain in force.

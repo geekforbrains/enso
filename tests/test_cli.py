@@ -136,11 +136,14 @@ async def test_serve_shares_the_clock_and_stops_both_runners(config, monkeypatch
         async def tick(self, now):
             pass
 
+        async def maintenance_tick(self, now):
+            pass
+
         async def stop(self):
             stopped.add(self.name)
 
     async def clock(callbacks):
-        assert set(callbacks) == {"jobs", "heartbeat"}
+        assert set(callbacks) == {"jobs", "workflow", "heartbeat"}
         ready.set()
         await asyncio.Event().wait()
 
@@ -167,6 +170,9 @@ async def test_serve_propagates_background_failures_and_cleans_up(
             self.name = name
 
         async def tick(self, now: object) -> None:
+            pass
+
+        async def maintenance_tick(self, now: object) -> None:
             pass
 
         async def stop(self) -> None:

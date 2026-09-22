@@ -124,7 +124,8 @@ $ENSO_HOME/
     ├── WORKSPACE.md              # optional agent triple and provider arguments
     ├── jobs/<job>/
     │   ├── JOB.md
-    │   ├── prerun.sh             # optional
+    │   ├── run.sh                # optional command script; filenames are chosen by the job
+    │   ├── gate.sh               # optional
     │   └── postrun.sh            # optional
     ├── projects/<KEY>/
     │   ├── PROJECT.md
@@ -424,8 +425,8 @@ unexpected and left alone. Note metadata, links, and style use the separate
 
 The command exits 1 while any error remains and 0 otherwise; warnings never fail an
 audit. With a readable configuration, the audit uses its project stages to include jobs
-that Enso runs itself, including `command` and `integrate` stages whose `JOB.md` omits
-provider, model, and effort. Without a readable configuration, it lists only jobs that
+that Enso runs itself, including standalone command jobs and `command`/`integrate` stages
+whose `JOB.md` omits `agent`. Without a readable configuration, it lists only jobs that
 can be parsed without one and skips the orphan and script checks because bindings, stage
 jobs, and project commands may be unknown. `enso doctor` reports `JOB.md` parsing
 problems; the layout audit does not. An unused workspace is an orphan warning, except for

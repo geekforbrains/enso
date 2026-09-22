@@ -11,6 +11,15 @@ import pytest
 from enso import scheduling
 
 
+@pytest.mark.parametrize("cron", ["0 0 31 2 *", "0 0 31 4 *"])
+def test_impossible_calendar_schedule_is_rejected(cron):
+    assert "no reachable calendar date" in scheduling.schedule_problem(cron)
+
+
+def test_leap_day_remains_a_valid_schedule():
+    assert scheduling.schedule_problem("0 0 29 2 *") is None
+
+
 @pytest.mark.parametrize(
     ("after", "cron", "expected"),
     [

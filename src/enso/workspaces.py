@@ -77,7 +77,7 @@ def bundled_skill_files() -> tuple[str, ...]:
 def _stamp(text: str, values: Mapping[str, str]) -> str:
     """Fill the ``{{key}}`` placeholders named in ``values``; any other is left as written.
 
-    Only the named keys are touched, so a job prompt keeps its ``{{prerun_output}}`` for
+    Only the named keys are touched, so a job prompt keeps its ``{{gate_output}}`` for
     the runner to fill at run time.
     """
     return re.sub(r"\{\{([a-z_]+)\}\}", lambda match: values.get(match[1], match[0]), text)
@@ -223,10 +223,15 @@ def _installed_agent(job: Path, default: Agent) -> Agent | None:
         return default
     try:
         fields = frontmatter.read(job).fields
+        if "command" in fields:
+            return default
+        selected = fields.get("agent")
+        if not isinstance(selected, dict):
+            return None
         values = [
             value
             for key in ("provider", "model", "effort")
-            if isinstance(value := fields.get(key), str)
+            if isinstance(value := selected.get(key), str)
         ]
         return Agent(*values) if len(values) == 3 else None
     except OSError, ValueError:

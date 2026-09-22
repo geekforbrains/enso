@@ -33,6 +33,11 @@ def schedule_problem(schedule: str) -> str | None:
         )
     if not croniter.is_valid(schedule):
         return f"schedule {schedule!r} is not a cron expression"
+    try:
+        # Syntactic validity alone accepts impossible dates such as February 31.
+        croniter(schedule, datetime(2000, 1, 1)).get_next(datetime)
+    except ValueError, OverflowError:
+        return f"schedule {schedule!r} has no reachable calendar date"
     return None
 
 

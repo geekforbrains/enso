@@ -235,7 +235,7 @@ def test_a_degraded_home_names_each_problem(
     ]
     assert report.section("jobs").problems == [
         f"default:broken ({enso_home.workspace_jobs('default') / 'broken' / 'JOB.md'}): "
-        "JOB.md.model 'gpt' is not in providers.claude.models"
+        "JOB.md.agent.model 'gpt' is not in providers.claude.models"
     ]
     assert report.section("jobs").note == "1 job, 1 enabled"
 

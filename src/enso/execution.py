@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import errno
 import logging
 import os
 import signal
 import subprocess
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from . import log as logctx
 from .providers import BaseProvider
@@ -39,6 +40,28 @@ class ProviderTurn:
     error: str = ""
     exit_code: int | None = None
     session_id: str | None = None
+
+
+async def finish_cleanup[T](operation: Awaitable[T]) -> T:
+    """Finish mandatory cleanup despite repeated cancellation of the caller."""
+    worker = asyncio.ensure_future(operation)
+    while True:
+        try:
+            return await asyncio.shield(worker)
+        except asyncio.CancelledError:
+            if worker.cancelled():
+                raise
+
+
+async def run_sync[T](function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
+    """Join a real worker before cancellation lets the caller release its resources."""
+    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+        with contextlib.suppress(Exception):
+            await finish_cleanup(worker)
+        raise
 
 
 def _group_exists(pgid: int) -> bool:
@@ -124,6 +147,33 @@ async def terminate_background_process(process: asyncio.subprocess.Process, labe
     await _signal_process_group(process, process.pid, signal.SIGKILL, TERMINATE_GRACE_SECONDS)
 
 
+async def _spawn(*cmd: str, label: str, **options: Any) -> asyncio.subprocess.Process:
+    """Retain ownership of a child even when cancellation lands during its creation."""
+    worker = asyncio.create_task(asyncio.create_subprocess_exec(*cmd, **options))
+    try:
+        return await asyncio.shield(worker)
+    except asyncio.CancelledError:
+
+        async def cleanup() -> None:
+            try:
+                process = await worker
+            except OSError, ValueError:
+                return
+            await terminate_background_process(process, label)
+
+        await finish_cleanup(cleanup())
+        raise
+
+
+def _start_error(exc: OSError | ValueError) -> str:
+    if isinstance(exc, OSError) and exc.errno == errno.E2BIG:
+        return (
+            "prompt or environment exceeds the operating system argument limit; "
+            "reduce the prompt or gate output"
+        )
+    return text_tail(str(exc), DIAGNOSTIC_KEEP)
+
+
 async def execute_turn(
     provider: BaseProvider,
     prompt: str,
@@ -162,8 +212,9 @@ async def execute_turn(
             batch=False,
             cwd=str(cwd),
         )
-        process = await asyncio.create_subprocess_exec(
+        process = await _spawn(
             *cmd,
+            label=f"{provider.name} background turn",
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT
@@ -174,7 +225,7 @@ async def execute_turn(
             start_new_session=True,
         )
     except (OSError, ValueError) as exc:
-        return ProviderTurn("error", error=text_tail(str(exc), DIAGNOSTIC_KEEP))
+        return ProviderTurn("error", error=_start_error(exc))
 
     output = ""
 
@@ -203,7 +254,9 @@ async def execute_turn(
         error = str(exc)
     finally:
         if not completed:
-            await terminate_background_process(process, f"{provider.name} background turn")
+            await finish_cleanup(
+                terminate_background_process(process, f"{provider.name} background turn")
+            )
     return ProviderTurn(
         status,
         output=output,
@@ -243,7 +296,7 @@ async def execute_batch(
             label=label,
         )
     except OSError as exc:
-        return ProviderTurn("error", error=f"could not start {provider.name}: {exc}")
+        return ProviderTurn("error", error=f"could not start {provider.name}: {_start_error(exc)}")
     output = provider.format_batch_output(stdout)
     if timed_out:
         error = f"timed out after {timeout:g}s"
@@ -318,8 +371,9 @@ async def run_process(
     """
     # No stream ``limit``: the chunked reader never calls readline, and the default
     # buffer with its flow control keeps the pipe bounded while the tail is trimmed.
-    process = await asyncio.create_subprocess_exec(
+    process = await _spawn(
         *cmd,
+        label=label,
         stdin=asyncio.subprocess.PIPE if stdin is not None else asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT if merge_stderr else asyncio.subprocess.PIPE,
@@ -340,10 +394,14 @@ async def run_process(
             stdout, stderr = b"", b""
     except BaseException:
         reading.cancel()
-        try:
-            await terminate_background_process(process, label)
-        finally:
-            await asyncio.gather(reading, return_exceptions=True)
+
+        async def cleanup() -> None:
+            try:
+                await terminate_background_process(process, label)
+            finally:
+                await asyncio.gather(reading, return_exceptions=True)
+
+        await finish_cleanup(cleanup())
         raise
     return (
         stdout.decode(errors="replace"),
@@ -354,7 +412,7 @@ async def run_process(
 
 
 def enso_error(stderr: str) -> str:
-    """The ``ENSO_ERROR: <summary>`` line a prerun may print, bounded; else empty."""
+    """The ``ENSO_ERROR: <summary>`` line a hook may print, bounded; else empty."""
     for line in stderr.splitlines():
         if line.lstrip().startswith("ENSO_ERROR:"):
             summary = " ".join(line.split(":", 1)[1].split())

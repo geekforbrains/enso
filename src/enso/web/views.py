@@ -24,7 +24,7 @@ from .. import audit, db, doctor, runs, skills, tasks, workflows, workspaces
 from .. import heartbeat as beats
 from .. import log as logsetup
 from ..config import Config, Paths, require_workspace
-from ..jobs import Job, load_jobs
+from ..jobs import Job, execution_kind, load_jobs
 from ..scheduling import cron_slots
 from . import Bind, common, files, filters
 from . import heartbeat as beatviews
@@ -650,6 +650,15 @@ class JobRow:
     problems: list[str]
     last: runs.RunSummary | None
     next_run: datetime | None
+    kind: str | None = None
+
+
+def _job_kind(job: Job | None, config: Config | None) -> str | None:
+    if job is None:
+        return None
+    if config is not None:
+        return execution_kind(job, config)
+    return "agent" if job.agent else "command" if job.command else "stage"
 
 
 def _next_run(job: Job | None, problems: list[str], now: datetime) -> datetime | None:
@@ -676,6 +685,7 @@ def _job_rows(
             job_problems.get(job.ref, []),
             latest.get(job.ref),
             _next_run(job, job_problems.get(job.ref, []), now),
+            _job_kind(job, config),
         )
         for job in found
     ]
@@ -733,7 +743,8 @@ def job_model(paths: Paths, name: str, section: str = "overview") -> dict[str, A
         "job": job,
         "project": project,
         "stage_definition": stage,
-        "engine": bool(stage and (stage.command is not None or stage.integrate)),
+        "kind": _job_kind(job, config),
+        "command": job.command if job and job.command else stage.command if stage else None,
         "problems": job_problems.get(name, []),
         # JOB.md's body is Markdown, so the page renders it rather than showing the source.
         "prompt": files.render_markdown(job.prompt) if job and job.prompt else None,
@@ -1055,17 +1066,6 @@ def run_model(paths: Paths, run_id: str) -> dict[str, Any] | None:
         "timeout": timeout,
         "tasks": related or [],
         "workflow": workflow,
-        "engine": bool(
-            run
-            and (
-                run.provider == "command"
-                or any(
-                    (entry.get("stage_definition") or {}).get("command")
-                    or (entry.get("stage_definition") or {}).get("integrate")
-                    for entry in workflow
-                )
-            )
-        ),
         "error": error or attempt_error or workflow_error,
     }
 

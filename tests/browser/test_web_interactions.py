@@ -2,8 +2,10 @@
 
 import pytest
 from aiohttp.test_utils import TestServer
+from conftest import load_job, write_config, write_job
 
-from enso import knowledge, secrets
+from enso import db, knowledge, runs, secrets
+from enso.config import load_config
 from enso.web.server import create_app
 
 playwright = pytest.importorskip("playwright.async_api")
@@ -35,6 +37,9 @@ async def test_secret_forms_filter_keyboard_and_native_confirmation(
     context = await browser.new_context(
         viewport={"width": width, "height": 900},
         color_scheme="dark" if width == 320 else "light",
+        # Form/keyboard behavior does not depend on cross-document animations. Rapid
+        # form navigation can make Chromium abort a native view transition mid-test.
+        reduced_motion="reduce",
     )
     page = await context.new_page()
     errors = []
@@ -162,5 +167,49 @@ async def test_secret_forms_without_javascript(browser, viewer, enso_home):
     await page.get_by_role("button", name="Delete secret", exact=True).click()
     await expect(page.get_by_role("status")).to_have_text("Secret deleted.")
     assert secrets.names(enso_home) == []
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await context.close()
+
+
+async def test_command_jobs_show_explicit_concurrency_on_mobile(
+    browser, viewer, enso_home, raw_config, tmp_path
+):
+    write_config(enso_home, raw_config)
+    write_job(enso_home, "agent")
+    for name, policy in (("refresh", "wait"), ("backup", "skip")):
+        concurrency = {"group": "reporting", "on_busy": policy}
+        if policy == "wait":
+            concurrency["max_wait"] = 300
+        write_job(
+            enso_home,
+            name,
+            command="bash refresh-reporting.sh",
+            prompt="Refresh the cache.",
+            concurrency=concurrency,
+        )
+    config = load_config(enso_home)
+    db.initialize(enso_home)
+    job = load_job(enso_home, config, "refresh")
+    run_id = runs.start(enso_home, job, "manual", effort=None, kind="command")
+    runs.finish(enso_home, run_id, status="ok", exit_code=0, output="Refreshed.")
+    context = await browser.new_context(viewport={"width": 320, "height": 900})
+    page = await context.new_page()
+    await page.goto(viewer + "jobs")
+    await page.locator("[data-search]").fill("command")
+    await expect(page.locator("[data-count]")).to_have_text("2 of 3")
+    await expect(page.locator('a[href="/jobs/default%3Aagent"]')).to_be_hidden()
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+
+    for name, policy in (("refresh", "wait"), ("backup", "skip")):
+        await page.goto(viewer + f"jobs/default%3A{name}")
+        await expect(page.locator("main")).to_contain_text("Command · no model")
+        await expect(page.locator("main")).to_contain_text(f"reporting · {policy} when busy")
+        await expect(page.get_by_role("heading", name="Description", exact=True)).to_be_visible()
+        assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+        await page.screenshot(path=str(tmp_path / f"job-{policy}-320.png"), full_page=True)
+
+    await page.goto(viewer + f"runs/{run_id}")
+    await expect(page.locator("main")).to_contain_text("Command · no model")
+    await expect(page.locator("main")).not_to_contain_text("None/None")
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await context.close()

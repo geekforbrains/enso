@@ -361,7 +361,8 @@ def test_apply_model_text_cannot_change_bundled_job_frontmatter(enso_home, raw_c
     code, report = invoke("config", "apply", "--file", "-", "--json", input=json.dumps(raw_config))
     assert code == 0 and report["ok"]
     job, problems = find_job(enso_home, load_config(enso_home), "default:enso-audit")
-    assert not problems and job.model == model and job.enabled
+    assert job is not None and job.agent is not None
+    assert not problems and job.agent.model == model and job.enabled
 
 
 def test_apply_atomic_write_failure_preserves_old_config(enso_home, raw_config, monkeypatch):

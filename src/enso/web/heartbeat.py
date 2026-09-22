@@ -52,13 +52,13 @@ class BeatRow:
 
 
 _ACTIVITY_SELECT = f"""SELECT id, workspace || ':' || job AS job, workspace,
-        provider, model, effort, trigger, started_at,
+        kind, provider, model, effort, trigger, started_at,
         ended_at, duration_ms, status, exit_code,
         substr(error, 1, {runs.ERROR_PREVIEW}) AS error_preview,
         output IS NOT NULL AS has_output, 'jobs' AS source, workspace || ':' || job AS title
         FROM runs
         UNION ALL SELECT id, printf('HB-%03d', beat_id),
-        json_extract(definition, '$.workspace'),
+        json_extract(definition, '$.workspace'), 'agent',
         json_extract(definition, '$.agent.provider'),
         json_extract(definition, '$.agent.model'),
         json_extract(definition, '$.agent.effort'),

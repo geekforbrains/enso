@@ -487,7 +487,7 @@ and the workspaces it reaches. A user-scope entry is marked as not managed by En
 
 ### Jobs
 
-The list is a job's directory name, its schedule, workspace and agent triple, a sparkline of
+The list is a job's directory name, its schedule, workspace and executor, a sparkline of
 recent outcomes, and when it runs next — or why it does not. The three facts are
 [equal columns](#row-standard) on a wide list. The sparkline is a fixed-width box the marks never
 scale inside, so it is anchored at its right edge: the newest run sits on the same axis in every
@@ -497,8 +497,10 @@ place of a schedule, here and on Today. Its
 own page adds Overview and History: the configuration and the prompt body, rendered with the
 same safe Markdown renderer as workspace files (for a stage job, the project and stage it
 serves, linked to the board filtered to that project and stage, and its effective concurrency
-group), prerun and postrun filenames and timeouts, the follow-up limit, a chart of recent
-outcomes, project capacity and configured stage check names, and any `JOB.md` problems keeping it from running. Command/integration stages are labelled as Enso engine execution with no model. It does not display hook script
+group and explicit wait/skip policy), gate and postrun commands and timeouts, the agent's
+follow-up limit, a chart of recent outcomes, project capacity and configured stage check
+names, and any `JOB.md` problems keeping it from running. Commands and integration are
+labelled with their executor instead of a model. It does not display hook script
 contents. History shows up to 500 runs of the job; the link to the filtered Runs page provides pagination when
 retention is higher.
 
@@ -531,7 +533,7 @@ Run history, newest first. Three views:
 | View | URL | Shows |
 | --- | --- | --- |
 | Acted | `/runs` | everything except `no_work` and `skipped` outcomes; the default |
-| Failed | `/runs?view=failed` | errors, timeouts, prerun failures, and interrupted heartbeat assessments |
+| Failed | `/runs?view=failed` | errors, timeouts, gate failures, and interrupted heartbeat assessments |
 | All | `/runs?view=all` | the whole retained history, consecutive `no_work` and `skipped` outcomes folded |
 
 Job links and filters use qualified references: `/jobs/team:digest` and
@@ -546,29 +548,30 @@ The list never reads a run's output. Heartbeat checks that did not involve an ag
 absent; the beat's Overview holds its latest check.
 
 Each job run opens to its full record: status, exit code, duration,
-trigger, the agent that ran it, the session ID, final postrun diagnostic, the error, and the
-latest provider output, which can be the whole retained megabyte. Output renders as Markdown
+trigger, the executor and agent when applicable, the session ID, final postrun diagnostic,
+the error, and command or latest provider output, which can be the whole retained megabyte. Output renders as Markdown
 with its line breaks kept, so a transcript's own fences and tables read as themselves, and
 falls back to wrapped monospace above 256 KiB. Errors and postrun errors stay monospaced
 always, because their exact spacing is the information. A heartbeat run's output renders
-the same way, being the same kind of provider transcript. Ordered attempts show each provider
-turn and its postrun result and feedback; attempt 0 represents a reaction hook when no
-provider ran. Older history has no attempts.
+the same way, being the same kind of provider transcript. Ordered attempts show command
+execution or each provider turn and its postrun result; attempt 0 represents a reaction
+hook when no executor ran. Older history has no attempts.
 For stage jobs, **Task workflow** shows the transactions belonging to this run using the
 same evidence view as the task page, with a link back to the task's complete audit history.
 Provider completion and stage acceptance are separate facts; the recorded transaction
 status states whether the handoff was accepted.
-The run remains `running` while postrun validates or requests a follow-up. Final duration
-includes hook time; the provider timeout allowance does not. See [Jobs](jobs.md#postrun-scripts).
+The run remains `running` while waiting for a concurrency group, executing, and checking
+postrun. Final duration includes waiting and hook time; the execution timeout allowance
+does not. See [Jobs](jobs.md#postrun-scripts).
 
 | Status | Meaning |
 | --- | --- |
-| `ok` | The provider and any postrun checks finished successfully |
-| `error` | The provider, postrun check, or run failed |
-| `timeout` | The provider turns exhausted their shared timeout allowance and were stopped |
-| `no_work` | The prerun exited 1, or no task was available to a stage job; the provider never ran |
-| `prerun_error` | The prerun failed; the provider never ran |
-| `skipped` | The prerun opened, but the concurrency group was busy; the provider never ran |
+| `ok` | The executor and any postrun checks finished successfully |
+| `error` | The executor, postrun check, or run failed |
+| `timeout` | The command or provider turns exhausted their execution allowance and were stopped |
+| `no_work` | The gate exited 1, or no task was available to a stage job; the executor never ran |
+| `gate_error` | The gate failed; the executor never ran |
+| `skipped` | Execution was not admitted, for example a busy skip-policy group or expired wait |
 | `running` | Still going, or interrupted before it could close |
 | `cancelled` | A heartbeat assessment stopped before settlement, for example on pause, edit, or shutdown |
 

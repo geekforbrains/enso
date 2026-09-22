@@ -265,7 +265,7 @@ one. `Handoff` is the last move's message, `Recent notes` the newest five notes,
 the attached evidence; a line with nothing to say is omitted. After the block comes a
 `[Project instructions — <path>]` section holding the main checkout's `AGENTS.md`, else
 `CLAUDE.md`, verbatim and capped at 64 KiB with the cap noted, and then the job prompt with
-`{{prerun_output}}` substituted as usual.
+`{{gate_output}}` substituted as usual.
 
 The spec, the handoff, and the notes came from a person or another agent, and the header
 says so: they are data for the agent to work from, not instructions that outrank the job

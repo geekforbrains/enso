@@ -1,6 +1,6 @@
 """The bundled ``enso-audit`` job end to end, with a stub ``enso`` first on PATH.
 
-Its prerun calls ``enso doctor --json --attention``; a stub that exits 0, 1, or 2 stands in
+Its gate calls ``enso doctor --json --attention``; a stub that exits 0, 1, or 2 stands in
 for it, so the real doctor never runs and the real home is never touched.
 """
 
@@ -51,7 +51,7 @@ def stub_enso(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Stub:
     monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
 
     def stub(exit_code: int, stdout: str = "", stderr: str = "") -> None:
-        # Newline-terminated like a real program's, so the prerun's own line stays a line.
+        # Newline-terminated like a real program's, so the gate's own line stays a line.
         (bin_dir / "stdout").write_text(f"{stdout}\n" if stdout else "")
         (bin_dir / "stderr").write_text(f"{stderr}\n" if stderr else "")
         script = bin_dir / "enso"
@@ -73,8 +73,8 @@ def seeded(paths: Paths, config: Config) -> Job:
     return load_job(paths, config, "enso-audit")
 
 
-def prerun(job: Job, paths: Paths) -> subprocess.CompletedProcess[str]:
-    """Run the prerun the way the runner does: bash, from the job directory, ENSO_HOME set."""
+def gate(job: Job, paths: Paths) -> subprocess.CompletedProcess[str]:
+    """Run the gate the way the runner does: bash, from the job directory, ENSO_HOME set."""
     env = {**os.environ, "ENSO_HOME": str(paths.home)}
     bash = shutil.which("bash")  # resolved here, since the script's PATH may hold nothing
     assert bash is not None
@@ -93,10 +93,17 @@ def test_template_parses_and_validates(enso_home: Paths, config: Config, raw_con
 
     assert validate(job, config) == [] and schedule_problem(job.schedule) is None
     assert (job.name, job.schedule, job.workspace) == ("Enso audit", "0 3 * * *", "default")
-    assert (job.provider, job.model, job.effort) == ("claude", "opus", "xhigh")
-    assert job.enabled and job.catch_up and job.prerun == "prerun.sh" and job.notify is None
-    assert job.prompt.count("{{prerun_output}}") == 1
-    assert "{{" not in job.prompt.replace("{{prerun_output}}", "")
+    assert job.agent is not None
+    assert (job.agent.provider, job.agent.model, job.agent.effort) == ("claude", "opus", "xhigh")
+    assert (
+        job.enabled
+        and job.catch_up
+        and job.gate is not None
+        and job.gate.command == "bash prerun.sh"
+        and job.notify is None
+    )
+    assert job.prompt.count("{{gate_output}}") == 1
+    assert "{{" not in job.prompt.replace("{{gate_output}}", "")
     assert (job.job_dir / "prerun.sh").is_file()
     for command in ("enso message send", "enso workspace audit --fix"):
         assert command in job.prompt
@@ -122,7 +129,7 @@ def test_template_parses_and_validates(enso_home: Paths, config: Config, raw_con
         (2, "", "boom", 2, ""),  # the doctor itself failed
     ],
 )
-def test_prerun_inverts_the_doctor_exit(
+def test_gate_inverts_the_doctor_exit(
     enso_home: Paths,
     config: Config,
     stub_enso: Stub,
@@ -134,7 +141,7 @@ def test_prerun_inverts_the_doctor_exit(
 ) -> None:
     job = seeded(enso_home, config)
     stub_enso(doctor_exit, stdout=stdout, stderr=stderr)
-    done = prerun(job, enso_home)
+    done = gate(job, enso_home)
     assert (done.returncode, done.stdout) == (expect_rc, expect_stdout)
     if expect_rc == 2:  # the doctor's own stderr passes through, then the alert line
         detail = "1 without a report" if doctor_exit == 1 else str(doctor_exit)
@@ -155,3 +162,23 @@ async def test_seeded_job_hands_the_report_to_the_agent_fenced(
     # The fake CLI echoes the substituted prompt: the report reached the agent, fenced.
     assert broken.status == "ok" and f"```json\n{BROKEN}\n```" in broken.output
     assert transport.sent == []  # the agent sends the summary; the runner alerts on failure only
+
+
+async def test_release_check_runs_as_a_command(enso_home, fake_config, tmp_path, monkeypatch):
+    workspaces.seed_jobs(enso_home, fake_config.defaults)
+    job = load_job(enso_home, fake_config, "enso-update")
+    assert job.agent is None and job.gate is None
+    assert job.command == "enso update check --notify --quiet"
+    assert not (job.job_dir / "prerun.sh").exists()
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    binary = bin_dir / "enso"
+    binary.write_text(
+        "#!/usr/bin/env bash\n"
+        '[[ "$*" == "update check --notify --quiet" ]] || exit 99\n'
+        'printf "checked\\n"\n'
+    )
+    binary.chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    result = await JobRunner(fake_config).run(job, trigger="manual")
+    assert result.status == "ok" and result.output == "checked\n"

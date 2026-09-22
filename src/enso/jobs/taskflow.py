@@ -14,7 +14,7 @@ from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
-from .. import tasks, workflows, worktrees
+from .. import execution, tasks, workflows, worktrees
 from ..config import Config, Paths
 from . import Job
 
@@ -40,16 +40,6 @@ def actor(job: Job) -> str:
     return f"job:{job.ref}"
 
 
-async def _join_worker[T](worker: asyncio.Task[T]) -> T:
-    """During cancellation cleanup, repeated stops must still wait for the real writer."""
-    while True:
-        try:
-            return await asyncio.shield(worker)
-        except asyncio.CancelledError:
-            if worker.cancelled():
-                raise
-
-
 async def _reserve(paths: Paths, config: Config, job: Job, run_id: str) -> tasks.Task | None:
     assert job.project is not None and job.stage is not None
     worker = asyncio.create_task(
@@ -60,18 +50,16 @@ async def _reserve(paths: Paths, config: Config, job: Job, run_id: str) -> tasks
     try:
         return await asyncio.shield(worker)
     except asyncio.CancelledError:
-        task = await _join_worker(worker)
+        task = await execution.finish_cleanup(worker)
         if task is not None:
-            await _join_worker(
-                asyncio.create_task(
-                    asyncio.to_thread(
-                        workflows.interrupt,
-                        paths,
-                        config,
-                        task.ref,
-                        run_id,
-                        "run cancelled while reserving the task",
-                    )
+            await execution.finish_cleanup(
+                asyncio.to_thread(
+                    workflows.interrupt,
+                    paths,
+                    config,
+                    task.ref,
+                    run_id,
+                    "run cancelled while reserving the task",
                 )
             )
         raise
@@ -96,7 +84,7 @@ def _instructions(repo: Path) -> tuple[str, str] | None:
 
 
 def _prepare(
-    paths: Paths, config: Config, job: Job, task: tasks.Task, run_id: str, prerun_output: str
+    paths: Paths, config: Config, job: Job, task: tasks.Task, run_id: str, gate_output: str
 ) -> StageRun:
     """Worktree, packet, and prompt for a claimed task; raises when the worktree fails."""
     assert job.project is not None
@@ -129,12 +117,12 @@ def _prepare(
     ]
     if instructions:
         parts.append(f"[Project instructions — {instructions[0]}]\n{instructions[1]}")
-    parts.append(job.prompt.replace("{{prerun_output}}", prerun_output))
+    parts.append(job.prompt.replace("{{gate_output}}", gate_output))
     return StageRun(task, "\n\n".join(parts), env)
 
 
 async def begin(
-    paths: Paths, config: Config, job: Job, run_id: str, prerun_output: str
+    paths: Paths, config: Config, job: Job, run_id: str, gate_output: str
 ) -> StageRun | None:
     """Claim the readiest task for this run and prepare it; None when nothing waits.
 
@@ -155,7 +143,7 @@ async def begin(
         ownership.__enter__()
         entered = True
         preparation = asyncio.create_task(
-            asyncio.to_thread(_prepare, paths, config, job, task, run_id, prerun_output)
+            asyncio.to_thread(_prepare, paths, config, job, task, run_id, gate_output)
         )
         prepared = await asyncio.shield(preparation)
         transferred = True
@@ -163,7 +151,7 @@ async def begin(
     except worktrees.WorktreeBusyError as exc:
         # Acceptance can release its claim before its final hook/ownership cleanup. The
         # next stage may reserve the task in that gap, but must simply retry admission.
-        await asyncio.to_thread(
+        await execution.run_sync(
             tasks.release,
             paths,
             task.ref,
@@ -176,26 +164,30 @@ async def begin(
     except (worktrees.WorktreeError, tasks.TaskError, OSError) as exc:
         message = f"could not prepare {task.ref}: {exc}"
         log.warning("run=%s %s", run_id, message)
-        await asyncio.to_thread(workflows.interrupt, paths, config, task.ref, run_id, message)
+        await execution.run_sync(workflows.interrupt, paths, config, task.ref, run_id, message)
         return StageRun(task, error=message)
     except BaseException as exc:
         # A cancelled await does not stop a worker thread. Keep the task reserved until
         # setup really finishes, so another run cannot start writing into the same tree.
         cancelled = isinstance(exc, asyncio.CancelledError)
-        if cancelled and preparation is not None:
-            with contextlib.suppress(Exception):
-                await _join_worker(preparation)
         status = "cancelled" if cancelled else f"error: {type(exc).__name__}: {exc}"
-        message = f"run {run_id} ended ({status}) while preparing {task.ref}"
-        log.warning("run=%s %s", run_id, message)
-        try:
-            await asyncio.shield(
-                asyncio.to_thread(workflows.interrupt, paths, config, task.ref, run_id, message)
-            )
-            if tasks.get(paths, task.ref).claim_run_id == run_id:
-                await asyncio.shield(asyncio.to_thread(_release, paths, task.ref, run_id, message))
-        except tasks.TaskError as release_exc:
-            log.warning("run=%s could not release %s: %s", run_id, task.ref, release_exc)
+
+        async def settle_interrupted() -> None:
+            if cancelled and preparation is not None:
+                with contextlib.suppress(Exception):
+                    await preparation
+            message = f"run {run_id} ended ({status}) while preparing {task.ref}"
+            log.warning("run=%s %s", run_id, message)
+            try:
+                await execution.run_sync(
+                    workflows.interrupt, paths, config, task.ref, run_id, message
+                )
+                if tasks.get(paths, task.ref).claim_run_id == run_id:
+                    await execution.run_sync(_release, paths, task.ref, run_id, message)
+            except tasks.TaskError as release_exc:
+                log.warning("run=%s could not release %s: %s", run_id, task.ref, release_exc)
+
+        await execution.finish_cleanup(settle_interrupted())
         raise
     finally:
         if entered and not transferred:
@@ -235,7 +227,7 @@ async def end(
     paths: Paths, config: Config, stage: StageRun, run_id: str, status: str, error: str = ""
 ) -> tasks.Task:
     """Block an unaccepted transaction and release its claim after execution stopped."""
-    return await asyncio.to_thread(_end, paths, config, stage.task.ref, run_id, status, error)
+    return await execution.run_sync(_end, paths, config, stage.task.ref, run_id, status, error)
 
 
 def release_orphans(paths: Paths, config: Config, run_id: str, message: str) -> list[str]:

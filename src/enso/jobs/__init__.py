@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
+from typing import Literal
 
 from .. import frontmatter, secrets
 from ..config import Config, Paths, require_workspace, split_job_ref, valid_workspace_name
@@ -20,31 +21,24 @@ from ..scheduling import next_cron
 from ..scheduling import schedule_problem as schedule_problem
 
 TEXT, INTEGER, NONNEGATIVE, FLAG = "text", "integer", "nonnegative", "flag"
-# Every field a JOB.md may carry, in the order docs/jobs.md lists them, by the YAML type it
-# must hold. The names are the Job dataclass's own, so a validated mapping constructs one.
 FIELDS: dict[str, str] = {
     "name": TEXT,
     "schedule": TEXT,
-    "provider": TEXT,
-    "model": TEXT,
-    "effort": TEXT,
+    "agent": "agent",
+    "command": TEXT,
     "project": TEXT,
     "stage": TEXT,
-    "concurrency_group": TEXT,
+    "concurrency": "concurrency",
     "enabled": FLAG,
     "secrets": "names",
-    "prerun": TEXT,
-    "prerun_timeout": INTEGER,
-    "postrun": TEXT,
-    "postrun_timeout": INTEGER,
-    "max_followups": NONNEGATIVE,
+    "gate": "hook",
+    "postrun": "hook",
     "timeout": INTEGER,
     "notify": TEXT,
     "catch_up": FLAG,
     "misfire_grace_seconds": INTEGER,
 }
-# ``schedule`` is required unless the job serves a stage, whose readiness is its own trigger.
-REQUIRED = ("name", "schedule", "provider", "model", "effort", "enabled")
+REQUIRED = ("name", "schedule", "enabled")
 _TYPE_PROBLEMS = {
     TEXT: "must be non-empty text",
     INTEGER: "must be a positive integer",
@@ -53,11 +47,31 @@ _TYPE_PROBLEMS = {
     "names": "must be a list of unique, unreserved secret names",
 }
 DEFAULT_TIMEOUT = 900
-DEFAULT_PRERUN_TIMEOUT = 120
-DEFAULT_POSTRUN_TIMEOUT = 120
+DEFAULT_HOOK_TIMEOUT = 120
 DEFAULT_MAX_FOLLOWUPS = 2
 DEFAULT_MISFIRE_GRACE = 300
-PLACEHOLDER_PROMPT = "Your prompt here. {{prerun_output}} is replaced with the prerun's stdout."
+PLACEHOLDER_PROMPT = "Your prompt here. {{gate_output}} is replaced with the gate's stdout."
+
+
+@dataclass(frozen=True)
+class JobAgent:
+    provider: str
+    model: str
+    effort: str
+    max_followups: int = DEFAULT_MAX_FOLLOWUPS
+
+
+@dataclass(frozen=True)
+class JobHook:
+    command: str
+    timeout: int = DEFAULT_HOOK_TIMEOUT
+
+
+@dataclass(frozen=True)
+class JobConcurrency:
+    group: str
+    on_busy: Literal["wait", "skip"]
+    max_wait: int | None = None
 
 
 @dataclass(frozen=True)
@@ -67,25 +81,21 @@ class Job:
     dir_name: str
     path: Path
     name: str
-    schedule: str | None  # cron, local time; None on a stage job that fires when work is ready
-    provider: str
-    model: str
-    effort: str
+    schedule: str | None
     workspace: str
     enabled: bool
     prompt: str
+    agent: JobAgent | None = None
+    command: str | None = None
     secrets: tuple[str, ...] = ()
-    project: str | None = None  # with ``stage``: the task board stage this job serves
+    project: str | None = None
     stage: str | None = None
-    concurrency_group: str | None = None  # serialize provider execution and postrun checks
-    prerun: str | None = None  # script in the job directory, run with bash
-    prerun_timeout: int = DEFAULT_PRERUN_TIMEOUT
-    postrun: str | None = None  # likewise, given the output on stdin and the outcome in env
-    postrun_timeout: int = DEFAULT_POSTRUN_TIMEOUT
-    max_followups: int = DEFAULT_MAX_FOLLOWUPS
+    concurrency: JobConcurrency | None = None
+    gate: JobHook | None = None
+    postrun: JobHook | None = None
     timeout: int = DEFAULT_TIMEOUT
-    notify: str | None = None  # failure alerts go here instead of the transport default
-    catch_up: bool = False  # run a missed slot late
+    notify: str | None = None
+    catch_up: bool = False
     misfire_grace_seconds: int = DEFAULT_MISFIRE_GRACE
 
     @property
@@ -99,7 +109,7 @@ class Job:
     @property
     def group(self) -> str | None:
         """An explicit shared-resource group; project capacity is enforced separately."""
-        return self.concurrency_group
+        return self.concurrency.group if self.concurrency else None
 
     def next_run(self, after: datetime) -> datetime:
         """The first slot after ``after`` as a local instant; slots are wall-clock times."""
@@ -108,7 +118,7 @@ class Job:
         return next_cron(self.schedule, after)
 
     def as_dict(self) -> dict:
-        return {**asdict(self), "ref": self.ref, "path": str(self.path), "group": self.group}
+        return {**asdict(self), "ref": self.ref, "path": str(self.path)}
 
 
 # -- Parsing and validation ---------------------------------------------------
@@ -184,44 +194,91 @@ def parse_job(path: Path, config: Config | None = None) -> tuple[Job | None, lis
     if document is None:
         return None, [f"JOB.md {problem}"]
     fields = document.fields
-    problems = [
-        f"{frontmatter.key_text(key)} is not a recognized field"
-        for key in fields
-        if key not in FIELDS
-    ]
-    command_stage = _command_stage(fields, config)
-    problems += [
-        f"{key} is required"
-        for key in REQUIRED
-        if key not in fields
-        and not (key == "schedule" and "stage" in fields)
-        and not (command_stage and key in ("provider", "model", "effort"))
-    ]
-    problems += [
-        f"{key} {_TYPE_PROBLEMS[kind]}"
-        for key, kind in FIELDS.items()
-        if key in fields and not _holds(kind, fields[key])
-    ]
-    if ("project" in fields) != ("stage" in fields):
-        problems.append("project and stage go together; give both or neither")
-    if not document.body and not command_stage:
-        problems.append("the prompt body is empty")
+    problems = _schema_problems(fields, document.body, config)
     schema_holds = not problems
     if config is not None:
         problems += _config_problems(fields, config, workspace)
     if not schema_holds:
         return None, problems
     given = {key: fields[key] for key in FIELDS if key in fields}
+    for key, cls in (
+        ("agent", JobAgent),
+        ("gate", JobHook),
+        ("postrun", JobHook),
+        ("concurrency", JobConcurrency),
+    ):
+        if key in given:
+            given[key] = cls(**given[key])
     if "secrets" in given:
         given["secrets"] = tuple(given["secrets"])
-    given.setdefault("schedule", None)  # a stage job may leave it out
-    if command_stage:
-        given.setdefault("provider", "command")
-        given.setdefault("model", "command")
-        given.setdefault("effort", "none")
+    given.setdefault("schedule", None)
     return Job(
         dir_name=path.parent.name, workspace=workspace, path=path, prompt=document.body, **given
     ), problems
+
+
+_NESTED_FIELDS = {
+    "agent": (
+        {"provider": TEXT, "model": TEXT, "effort": TEXT, "max_followups": NONNEGATIVE},
+        ("provider", "model", "effort"),
+    ),
+    "hook": ({"command": TEXT, "timeout": INTEGER}, ("command",)),
+    "concurrency": ({"group": TEXT, "on_busy": TEXT, "max_wait": INTEGER}, ("group", "on_busy")),
+}
+
+
+def _field_problems(
+    fields: Mapping[str, object],
+    schema: dict[str, str],
+    required: tuple[str, ...],
+    prefix: str = "",
+) -> list[str]:
+    problems = [
+        f"{frontmatter.key_text(prefix + key)} is not a recognized field"
+        for key in fields
+        if key not in schema
+    ]
+    problems += [f"{prefix}{key} is required" for key in required if key not in fields]
+    for key, kind in schema.items():
+        if key not in fields:
+            continue
+        value = fields[key]
+        if kind in _NESTED_FIELDS:
+            if not isinstance(value, dict):
+                problems.append(f"{prefix}{key} must be a block of key: value fields")
+            else:
+                nested, needed = _NESTED_FIELDS[kind]
+                problems += _field_problems(value, nested, needed, f"{prefix}{key}.")
+        elif not _holds(kind, value):
+            problems.append(f"{prefix}{key} {_TYPE_PROBLEMS[kind]}")
+    return problems
+
+
+def _schema_problems(fields: Mapping[str, object], body: str, config: Config | None) -> list[str]:
+    required = tuple(key for key in REQUIRED if key != "schedule" or "stage" not in fields)
+    problems = _field_problems(fields, FIELDS, required)
+    if ("project" in fields) != ("stage" in fields):
+        problems.append("project and stage go together; give both or neither")
+    if "stage" in fields:
+        if "command" in fields:
+            problems.append("stage commands belong in PROJECT.md; a job cannot override them")
+        if _command_stage(fields, config):
+            if "agent" in fields:
+                problems.append("a command or integration stage cannot configure an agent")
+        elif config is not None and "agent" not in fields:
+            problems.append("agent is required for an agent stage")
+    elif ("agent" in fields) == ("command" in fields):
+        problems.append("give exactly one of agent or command")
+    if "agent" in fields and not body:
+        problems.append("the prompt body is empty")
+    concurrency = fields.get("concurrency")
+    if isinstance(concurrency, dict):
+        policy = _usable(concurrency, "on_busy")
+        if policy is not None and policy not in ("wait", "skip"):
+            problems.append("concurrency.on_busy must be wait or skip")
+        if "max_wait" in concurrency and policy != "wait":
+            problems.append("concurrency.max_wait is only allowed with on_busy: wait")
+    return problems
 
 
 def _usable(fields: Mapping[str, object], key: str) -> str | None:
@@ -243,8 +300,19 @@ def _command_stage(fields: Mapping[str, object], config: Config | None) -> bool:
     return stage is not None and (stage.command is not None or stage.integrate)
 
 
+def execution_kind(job: Job, config: Config) -> Literal["agent", "command", "integration"]:
+    """Resolve the executor; PROJECT.md owns executors for stage bindings."""
+    project = config.projects.get(job.project or "")
+    stage = project.stage(job.stage or "") if project else None
+    if stage and stage.integrate:
+        return "integration"
+    if job.command is not None or (stage and stage.command is not None):
+        return "command"
+    return "agent"
+
+
 def command_stage(job: Job, config: Config) -> bool:
-    return _command_stage({"project": job.project, "stage": job.stage}, config)
+    return job.stage is not None and execution_kind(job, config) != "agent"
 
 
 def _agent_problems(fields: Mapping[str, object], config: Config) -> list[str]:
@@ -258,20 +326,23 @@ def _agent_problems(fields: Mapping[str, object], config: Config) -> list[str]:
     """
     if _command_stage(fields, config):
         return []
-    name = _usable(fields, "provider")
+    agent = fields.get("agent")
+    if not isinstance(agent, Mapping):
+        return []
+    name = _usable(agent, "provider")
     if name is None:
         return []
     provider = config.providers.get(name)
     if provider is None:
-        return [f"JOB.md.provider {name!r} is not configured"]
+        return [f"JOB.md.agent.provider {name!r} is not configured"]
     problems: list[str] = []
-    model = _usable(fields, "model")
+    model = _usable(agent, "model")
     if model is not None and model not in provider.models:
-        problems.append(f"JOB.md.model {model!r} is not in providers.{name}.models")
-    effort = _usable(fields, "effort")
+        problems.append(f"JOB.md.agent.model {model!r} is not in providers.{name}.models")
+    effort = _usable(agent, "effort")
     levels = PROVIDER_CLASSES[name].effort_levels
     if effort is not None and effort not in levels:
-        problems.append(f"JOB.md.effort must be one of {', '.join(levels)}")
+        problems.append(f"JOB.md.agent.effort must be one of {', '.join(levels)}")
     return problems
 
 
@@ -328,7 +399,13 @@ def _config_problems(fields: Mapping[str, object], config: Config, workspace: st
 
 def validate(job: Job, config: Config) -> list[str]:
     """Validate a job against installation, workspace, and project settings."""
-    problems = _config_problems({key: getattr(job, key) for key in FIELDS}, config, job.workspace)
+    values = asdict(job)
+    fields = {key: values[key] for key in FIELDS if values[key] is not None}
+    fields["secrets"] = list(job.secrets)
+    if job.concurrency and job.concurrency.max_wait is None:
+        fields["concurrency"].pop("max_wait")
+    problems = _schema_problems(fields, job.prompt, config)
+    problems += _config_problems(fields, config, job.workspace)
     try:
         if job.path != _job_path(config.paths, job.ref):
             raise ValueError("job path does not match its owning workspace")
@@ -378,11 +455,13 @@ def create_job(
     config: Config,
     *,
     name: str,
-    provider: str,
-    model: str,
-    effort: str,
     schedule: str | None,
     workspace: str,
+    provider: str | None = None,
+    model: str | None = None,
+    effort: str | None = None,
+    command: str | None = None,
+    concurrency: JobConcurrency | None = None,
     project: str | None = None,
     stage: str | None = None,
 ) -> Job:
@@ -394,17 +473,23 @@ def create_job(
         raise ValueError("--project and --stage go together; give both or neither")
     if schedule is None and stage is None:
         raise ValueError("--schedule is required unless --project and --stage are given")
+    agent = None
+    if any(value is not None for value in (provider, model, effort)):
+        if provider is None or model is None or effort is None:
+            raise ValueError("--provider, --model, and --effort are required together")
+        agent = JobAgent(provider, model, effort)
+    prompt = PLACEHOLDER_PROMPT if agent else ""
     job = Job(
         dir_name=dir_name,
         path=paths.job(f"{workspace}:{dir_name}"),
         name=name,
         schedule=schedule,
-        provider=provider,
-        model=model,
-        effort=effort,
+        agent=agent,
+        command=command,
+        concurrency=concurrency,
         workspace=workspace,
         enabled=False,
-        prompt=PLACEHOLDER_PROMPT,
+        prompt=prompt,
         project=project,
         stage=stage,
     )
@@ -413,17 +498,20 @@ def create_job(
         raise ValueError("; ".join(problems))
     if job.job_dir.exists():
         raise FileExistsError(f"job {job.ref} already exists at {job.job_dir}")
-    job.job_dir.mkdir(parents=True)
     fields: dict[str, object] = {"name": name}
     if schedule is not None:
         fields["schedule"] = schedule
-    fields |= {
-        "provider": provider,
-        "model": model,
-        "effort": effort,
-    }
+    if agent is not None:
+        fields["agent"] = {"provider": provider, "model": model, "effort": effort}
+    if command is not None:
+        fields["command"] = command
+    if concurrency is not None:
+        fields["concurrency"] = {
+            key: value for key, value in asdict(concurrency).items() if value is not None
+        }
     if project is not None and stage is not None:
         fields |= {"project": project, "stage": stage}
     fields["enabled"] = False
-    job.path.write_text(render(fields, PLACEHOLDER_PROMPT), "utf-8")
+    job.job_dir.mkdir(parents=True)
+    job.path.write_text(render(fields, prompt), "utf-8")
     return job

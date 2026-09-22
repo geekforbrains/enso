@@ -84,7 +84,8 @@ def test_development_preset_creates_disabled_valid_jobs_and_external_worktrees(
     loaded, faults = jobs.load_jobs(enso_home, configured)
     assert not faults and len(loaded) == 4 and all(not job.enabled for job in loaded)
     integration = next(job for job in loaded if job.stage == "integrate")
-    assert integration.provider == "command"
+    assert integration.agent is None and integration.command is None
+    assert jobs.execution_kind(integration, configured) == "integration"
 
 
 def test_replacement_preserves_scripts_tasks_and_history_and_retires_original_jobs(

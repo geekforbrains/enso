@@ -71,7 +71,7 @@ Adding or editing a skill needs no Enso restart. The provider discovers skills t
 | `enso-skills` | Finding and installing official optional skills; authoring manual skills and choosing scope |
 | `enso-security` | Installation trust, provider permissions, credential handling, and untrusted input |
 | `enso-heartbeat` | Finite future actions and temporary watches: gates, event history, action receipts, explicit completion |
-| `enso-jobs` | Scheduled and stage jobs: `JOB.md`, no-work prerun gates, postrun checks and same-session follow-ups, run history |
+| `enso-jobs` | Scheduled agent/command jobs and stage jobs: `JOB.md`, gates, explicit wait/skip groups, postrun checks, follow-ups and history |
 | `enso-projects` | Projects, task boards and handoffs, workflows, checks, lifecycle scripts, and worktrees |
 | `enso-slack` | Looking people and channels up, reading Slack, sending messages, files, tables, and charts |
 | `enso-tables` | Durable structured data in `enso.db` |

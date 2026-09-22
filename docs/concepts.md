@@ -181,8 +181,8 @@ The stored agent is always a complete triple; a chat `use` shorthand changes one
 the current triple without inferring a model. `defaults` in `config.json` gives the
 triple a conversation uses unless its workspace replaces the whole triple or the conversation
 selects another with the chat `use` command. Each provider-backed job must state its own
-triple in `JOB.md`, independent of chat defaults, and still uses the workspace's
-provider-argument overrides. Command and integration stages omit the triple because they do
+triple in `JOB.md.agent`, independent of chat defaults, and still uses the workspace's
+provider-argument overrides. Command jobs and integration stages omit the agent because they do
 not invoke a provider. Providers with an ordered reasoning ladder clamp effort *down* to
 what the model supports, with a log line saying so. Antigravity
 reports the effort embedded in its model id, even when the request is lower; OpenCode
@@ -222,14 +222,16 @@ session can still receive Slack thread context. Jobs and Heartbeat keep their ow
 ## Job and run
 
 A job is a workspace directory `jobs/<job>/` containing a `JOB.md`: YAML frontmatter
-naming the schedule and agent, plus a prompt body. Its workspace comes from its location;
+naming a schedule and either `agent` or `command`. The Markdown body is the agent's prompt
+or an optional command description. Its workspace comes from its location;
 its reference is `<workspace>:<job>`, as defined in
 [Workspaces](workspaces.md#ownership-in-020). The scheduler wakes once a minute and fires
 the jobs whose cron slot has passed.
 
-A job may have a **prerun** script that gates it (nothing is spent when there is nothing to
-do) and a **postrun** script that checks or reacts to the outcome, optionally sending a
-follow-up message into the same provider session. Every trigger that passes the
+A job may have a **gate** command that decides whether work is needed and a **postrun**
+command that checks or reacts to the outcome, optionally sending a follow-up into the same
+agent session. An optional **concurrency group** serializes jobs sharing a resource; its
+required policy explicitly says whether to `wait` or `skip` when busy. Every trigger that passes the
 per-job lock creates a **run** row recording status, exit code, duration, and the output
 tail. See [Jobs](jobs.md).
 
@@ -445,23 +447,26 @@ reads.
 3. It takes the per-job lock. An overlapping trigger is skipped, never queued.
 4. A run row opens as `running`, and any declared secrets resolve into one environment
    snapshot. A resolution failure records `error` before any process starts.
-5. The **prerun** runs from the job directory. Exit 0 opens the gate and its stdout is
+5. The **gate** runs from the job directory. Exit 0 opens the gate and its stdout is
    substituted into the prompt; exit 1 means no work; anything else is a failure.
-6. If the job names a `concurrency_group`, it tries that group's lock after the prerun
-   opens; a collision produces `skipped` without starting a provider.
-7. The provider runs in the workspace. Jobs with postrun capture a resumable session from
-   structured output; jobs without postrun use batch execution.
+6. The optional concurrency group admits jobs in order. Its explicit `on_busy` chooses
+   waiting or skipping; an optional wait deadline also produces `skipped`. Waiting holds
+   the per-job lock, so subsequent triggers cannot add more copies, and consumes no execution
+   timeout. A waiting job is rechecked before execution and stops waiting for maintenance.
+7. The command runs beside `JOB.md`, or the agent runs in its workspace. Agent jobs with
+   postrun capture a resumable session from structured output; ordinary agent jobs without
+   postrun use batch execution. Commands have no provider configuration or LLM fallback.
 8. The **postrun** receives the latest output on stdin and current outcome in its
    environment. Exit 0 finishes. Exit 10 with a message on stdout requests another turn in
-   the same session, followed by another check. The default `max_followups` is 2 and each
-   `JOB.md` can override it; prerun never repeats within this loop.
+   the same agent session, followed by another check; a command cannot request an agent.
+   `agent.max_followups` defaults to 2; the gate never repeats within this loop.
 9. The row stays `running`, and the acquired job/group locks stay held, until checking
    finishes. Attempts and hook diagnostics are retained; failed checks fail the run. The
-   provider turns share the job's timeout allowance, while each hook has its own timeout.
-10. Non-provider outcomes and provider failures still run a reaction hook but cannot start
+   command uses the job's timeout; provider turns share that allowance. Each hook has its own.
+10. Non-execution outcomes and execution failures still run a reaction hook but cannot start
     follow-ups. Cancellation or an unexpected runner exception closes the row as `error`
     and bypasses further hooks. A new trigger always starts a fresh session.
-11. Scheduled and ready-triggered runs send final failure alerts and prerun recovery notices
+11. Scheduled and ready-triggered runs send final failure alerts and gate recovery notices
     as described in [Jobs](jobs.md#alerts); prompts and scripts can send messages during any run.
 
 ## How a stage job run flows

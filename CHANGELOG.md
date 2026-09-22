@@ -7,6 +7,9 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- Scheduled command jobs run scripts without an LLM, with the same timeouts, secrets,
+  output history and postrun checks as agent jobs. Concurrency groups explicitly choose
+  `wait` or `skip`, with fair waiting across processes and optional waiting deadlines.
 - Encrypted secrets with desktop/mobile web forms and `enso secret` management, retrieval,
   and command injection. Jobs can declare one list of secret names for their full run.
   The master key stays outside the Enso home and unlocks automatically after restarts.
@@ -27,6 +30,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- **Breaking:** `JOB.md` groups provider settings under `agent`, replaces prerun with
+  `gate`, and uses explicit commands/timeouts for hooks. Home revision 5 migrates existing
+  jobs and run history; old concurrency groups retain `on_busy: skip`. The bundled release
+  check becomes a command job, recording completed checks as `ok`.
 - **Breaking:** `default` is the required operator workspace for installation-wide jobs.
   Configuration checks, doctor, and audits report it missing even without bindings;
   configuration writes refuse it before saving. Restore it or run
@@ -59,6 +66,9 @@ All notable changes to Enso are documented here, following
 
 ### Fixed
 
+- Impossible schedules cannot starve other jobs. Command failures still invoke postrun,
+  workflow repairs require a resumable agent session, and interrupted cleanup no longer
+  leaves finished runs holding task claims. Lifecycle delivery no longer delays job dispatch.
 - Outbound message sends for a valid workspace no longer fail because an unrelated binding
   names a missing workspace directory; `enso config check` still reports it.
 - Exit for supervisor recovery when the scheduler or daemon-state publisher fails instead of

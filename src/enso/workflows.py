@@ -8,8 +8,6 @@ files. See docs/tasks.md for the execution trust boundary.
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
 import copy
 import fnmatch
 import hashlib
@@ -18,7 +16,6 @@ import os
 import sqlite3
 import time
 import uuid
-from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -460,25 +457,6 @@ def _verify_rebased_rules(paths: Paths, cwd: Path, tx: dict[str, Any], stage: St
         raise tasks.TaskError(problem)
 
 
-async def _run_sync[T](function: Callable[..., T], *args: Any, **kwargs: Any) -> T:
-    """Cancellation joins the real worker before its caller releases any execution lease."""
-    worker = asyncio.create_task(asyncio.to_thread(function, *args, **kwargs))
-    try:
-        return await asyncio.shield(worker)
-    except asyncio.CancelledError:
-        while not worker.done():
-            try:
-                await asyncio.shield(worker)
-            except asyncio.CancelledError:
-                continue
-            except Exception:
-                break
-        # Consume an operation error without replacing the original cancellation.
-        with contextlib.suppress(Exception, asyncio.CancelledError):
-            worker.result()
-        raise
-
-
 def _recovery_intent(
     paths: Paths,
     tx: dict[str, Any],
@@ -616,7 +594,7 @@ async def evaluate(
             tx["error"] = ""
             _update(paths, tx)
             if project.repo and stage.worktree is not False:
-                dirty = await _run_sync(worktrees._unclean, cwd)
+                dirty = await execution.run_sync(worktrees._unclean, cwd)
                 if dirty:
                     return _failure(
                         paths,
@@ -624,16 +602,16 @@ async def evaluate(
                         "Candidate has uncommitted or untracked files: " + ", ".join(dirty),
                         repairable=True,
                     )
-                problem = await _run_sync(_rule_problem, paths, cwd, tx, stage)
+                problem = await execution.run_sync(_rule_problem, paths, cwd, tx, stage)
                 if problem:
                     return _failure(paths, tx, problem, repairable=False)
             target_sha = None
             if stage.integrate:
                 lease = worktrees.landing_context(paths, project, ref)
-                await _run_sync(lease.__enter__)
-                current_revision = await _run_sync(_revision, cwd)
+                await execution.run_sync(lease.__enter__)
+                current_revision = await execution.run_sync(_revision, cwd)
                 recovery = _recovery_intent(paths, tx, stage, current_revision or "")
-                candidate, target_sha = await _run_sync(
+                candidate, target_sha = await execution.run_sync(
                     worktrees.prepare_land,
                     paths,
                     project,
@@ -641,10 +619,10 @@ async def evaluate(
                     recovery_candidate=recovery["candidate"] if recovery else None,
                 )
                 tx["recovery_of"] = (recovery or {}).get("transaction_id")
-                await _run_sync(_verify_rebased_rules, paths, cwd, tx, stage)
+                await execution.run_sync(_verify_rebased_rules, paths, cwd, tx, stage)
             else:
                 candidate = (
-                    await _run_sync(_revision, cwd)
+                    await execution.run_sync(_revision, cwd)
                     if project.repo and stage.worktree is not False
                     else _hash([tx["spec_hash"], tx["message"]])
                 )
@@ -702,7 +680,7 @@ async def evaluate(
             if (
                 project.repo
                 and stage.worktree is not False
-                and await _run_sync(_candidate_changed, cwd, candidate)
+                and await execution.run_sync(_candidate_changed, cwd, candidate)
             ):
                 return _failure(
                     paths,
@@ -726,7 +704,9 @@ async def evaluate(
                     "recovery_of": tx.get("recovery_of"),
                 }
                 _update(paths, tx)  # durable intent before the local Git ref update
-                await _run_sync(_finish_integration, paths, project, tx, candidate, target_sha)
+                await execution.run_sync(
+                    _finish_integration, paths, project, tx, candidate, target_sha
+                )
                 _check_current(paths, config, tx)
         _check_current(paths, config, tx)
         _accept(paths, config, tx)
@@ -1065,8 +1045,8 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
             )
         try:
             if project.repo and stage.worktree is not False:
-                await _run_sync(worktrees.prepare, paths, project, ref)
-            await _run_sync(start, paths, config, ref, run_id)
+                await execution.run_sync(worktrees.prepare, paths, project, ref)
+            await execution.run_sync(start, paths, config, ref, run_id)
             with db.transaction(paths) as con:
                 current = tasks._load(con, ref)
                 submit(
