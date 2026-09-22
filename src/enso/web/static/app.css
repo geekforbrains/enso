@@ -149,9 +149,14 @@
 
   .sidebar {
     position: fixed; inset: 0 auto 0 0; width: var(--sidebar);
+    display: flex; flex-direction: column;
     padding: var(--s-6) var(--s-5); overflow-y: auto;
     background: var(--bg); border-right: 1px solid var(--border);
     view-transition-name: sidebar;
+  }
+  .sidebar-version {
+    margin-top: auto; padding: var(--s-7) var(--s-5) 0;
+    color: var(--fg-3); font-size: var(--text-xs); line-height: var(--lh-xs);
   }
   .side-nav li + li { margin-top: var(--s-1); }
   .side-nav a, .more-panel a {

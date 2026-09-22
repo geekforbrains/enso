@@ -88,7 +88,8 @@ decoration do not replace the viewer's familiar density or interaction patterns.
 ## Layout
 
 Desktop navigation is a left sidebar and nothing else: there is no top bar, and the current
-view is marked by a bar on its left edge. Each page opens with its name and the time it was
+view is marked by a bar on its left edge. The running Enso version appears at the bottom
+left of the sidebar. Each page opens with its name and the time it was
 rendered, because pages do not refresh themselves, and no page carries a subtitle; a fact
 worth knowing lives in a definition list or on the line that counts the rows. Each view keeps
 its named sections above the content:
