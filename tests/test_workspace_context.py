@@ -93,7 +93,7 @@ def test_workspace_settings_inherit_and_replace_complete_values(enso_home, raw_c
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None, problems
     assert resolve_agent(config, "team").source == "defaults"
-    path = write_workspace(
+    write_workspace(
         enso_home,
         "team",
         {
@@ -101,7 +101,6 @@ def test_workspace_settings_inherit_and_replace_complete_values(enso_home, raw_c
             "providers": {"claude": {"args": []}},
         },
     )
-    path.write_text(path.read_text() + "\nExplanatory Markdown is not an Enso setting.\n")
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is not None, problems
     assert resolve_agent(config, "team").provider == "codex"
@@ -140,11 +139,16 @@ def test_invalid_workspace_fields_are_reported_together(enso_home, raw_config, f
 @pytest.mark.parametrize(
     "content",
     [
-        b"without frontmatter",
-        b"---\n---\n",
-        b"---\n[]\n---\n",
-        b"---\nproviders: [\n---\n",
-        b"---\nagent: {}\nagent: {}\n---\n",
+        b"",
+        b"[]",
+        b"null",
+        b'{"providers": [}',
+        b'{"agent": {}, "agent": {}}',
+        b'{"providers": {"claude": {"args": [], "args": []}}}',
+        b'{"providers": NaN}',
+        b'{"providers": Infinity}',
+        b"{}\nUnused Markdown is not allowed.\n",
+        b"---\n{}\n---\n",
         b"\xff",
     ],
 )
@@ -161,9 +165,9 @@ def test_bad_workspace_documents_fail_closed_at_the_cli(enso_home, raw_config, c
 @pytest.mark.parametrize("kind", ["symlink", "directory", "fifo"])
 def test_workspace_settings_must_be_a_regular_file(enso_home, raw_config, tmp_path, kind):
     path = enso_home.workspace_settings("default")
-    target = tmp_path / "outside.md"
+    target = tmp_path / "outside.json"
     if kind == "symlink":
-        target.write_text("---\n{}\n---\n")
+        target.write_text("{}\n")
         path.symlink_to(target)
     elif kind == "directory":
         path.mkdir()
@@ -172,7 +176,7 @@ def test_workspace_settings_must_be_a_regular_file(enso_home, raw_config, tmp_pa
     config, problems, _ = parse_config(raw_config, enso_home)
     assert config is None and str(path) in problems[0]
     if kind == "symlink":
-        assert target.read_text() == "---\n{}\n---\n"
+        assert target.read_text() == "{}\n"
 
 
 def test_workspace_live_reload_tracks_creation_edits_removal_and_invalid_revisions(
@@ -189,12 +193,14 @@ def test_workspace_live_reload_tracks_creation_edits_removal_and_invalid_revisio
     assert "team" in first.workspaces and first.provider_args("team", "claude") == ()
     assert "team" not in original.workspaces
     replacement = path.with_suffix(".tmp")
-    replacement.write_text("---\nagent: {provider: claude, model: sonnet, effort: high}\n---\n")
+    replacement.write_text(
+        json.dumps({"agent": {"provider": "claude", "model": "sonnet", "effort": "high"}})
+    )
     replacement.replace(path)
     second = live.current()
     assert resolve_agent(second, "team").model == "sonnet"
     assert first.provider_args("team", "claude") == ()
-    path.write_text("---\nagent: {}\n---\n")
+    path.write_text('{"agent": {}}')
     with caplog.at_level(logging.WARNING, logger="enso.config"):
         assert live.current() is second
         assert live.current() is second
@@ -207,6 +213,24 @@ def test_workspace_live_reload_tracks_creation_edits_removal_and_invalid_revisio
     # An empty, unbound workspace can disappear; discovery must not retain its settings.
     shutil.rmtree(enso_home.workspace("team"))
     assert "team" not in live.current().workspaces
+
+
+@pytest.mark.parametrize("with_json", [False, True])
+def test_legacy_workspace_settings_require_migration_even_after_startup(
+    enso_home, raw_config, with_json
+):
+    write_config(enso_home, raw_config)
+    if with_json:
+        write_workspace(enso_home, "default", {})
+    live = LiveConfig(load_config(enso_home))
+    before = live.current()
+    legacy = enso_home.workspace("default") / "WORKSPACE.md"
+    legacy.write_text("---\nproviders: {claude: {args: []}}\n---\n")
+    assert live.current() is before
+    with pytest.raises(ConfigError, match="legacy workspace settings require the home migration"):
+        load_config(enso_home)
+    legacy.unlink()
+    assert live.current().provider_args("default", "claude") == ("--skip",)
 
 
 def test_context_precedence_requires_an_existing_workspace_and_never_infers_cwd(
@@ -235,7 +259,7 @@ def test_context_precedence_requires_an_existing_workspace_and_never_infers_cwd(
 def test_linked_workspace_has_no_second_identity(enso_home, raw_config, tmp_path):
     target = tmp_path / "outside"
     target.mkdir()
-    (target / "WORKSPACE.md").write_text("---\n{}\n---\n")
+    (target / "workspace.json").write_text("{}\n")
     root = enso_home.workspace("alias")
     root.symlink_to(target, target_is_directory=True)
     with pytest.raises(ValueError, match="symbolic link"):

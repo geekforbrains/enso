@@ -13,7 +13,6 @@ from collections.abc import Awaitable, Callable, Iterable
 from pathlib import Path
 
 import pytest
-import yaml
 
 from enso import db, frontmatter, migrations
 from enso.config import Config, Paths, parse_config
@@ -290,9 +289,9 @@ def config_both(enso_home: Paths, raw_config_both: dict):
 
 
 def write_workspace(paths: Paths, name: str, fields: dict) -> Path:
-    """Write settings in an existing scratch workspace through the real Markdown format."""
+    """Write settings in an existing scratch workspace through the real JSON format."""
     path = paths.workspace_settings(name)
-    path.write_text("---\n" + yaml.safe_dump(fields, sort_keys=False) + "---\n", "utf-8")
+    path.write_text(json.dumps(fields, indent=2) + "\n", "utf-8")
     return path
 
 

@@ -212,7 +212,7 @@ The offline commands in this section work without an active config or transport 
 Version-1 configuration files receive the [migration notice](configuration.md#configuration-ownership-in-020).
 `ENSO_WORKSPACE` does not restrict config edits; validation and write-conflict checks still apply.
 These commands edit only `config.json`. Workspace overrides are edited directly in
-[`WORKSPACE.md`](configuration.md#workspacemd-in-020) and checked by `enso config check`.
+[`workspace.json`](configuration.md#workspacejson) and checked by `enso config check`.
 
 | Command | Report fields |
 | --- | --- |

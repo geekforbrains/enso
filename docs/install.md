@@ -152,7 +152,7 @@ enso logs --job meteor:meteor-forum-watch
 enso logs --turn a1b2c3
 ```
 
-Editing workspace `WORKSPACE.md` or project `PROJECT.md` needs no restart.
+Editing workspace `workspace.json` or project `PROJECT.md` needs no restart.
 Editing `config.json` needs no restart for `bindings`, `defaults`, `providers`, `agent`,
 `runs`, and `heartbeat`: the service reads the file again
 for its next chat turn and scheduler tick, the same way `JOB.md` files are reloaded every

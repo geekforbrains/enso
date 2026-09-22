@@ -1,4 +1,4 @@
-"""Home paths, workspace context, and configuration snapshots from JSON and workspace Markdown."""
+"""Home paths, workspace context, and configuration snapshots from JSON and project Markdown."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 import threading
 from collections.abc import Iterator, Mapping
@@ -177,7 +178,7 @@ class Paths:
         return self.workspaces / name
 
     def workspace_settings(self, name: str) -> Path:
-        return self.workspace(name) / "WORKSPACE.md"
+        return self.workspace(name) / "workspace.json"
 
     def workspace_knowledge(self, name: str) -> Path:
         return self.workspace(name) / "knowledge"
@@ -230,7 +231,7 @@ class ProviderConfig:
 
 @dataclass(frozen=True)
 class WorkspaceConfig:
-    """Overrides read from a workspace's optional WORKSPACE.md in this snapshot."""
+    """Overrides read from a workspace's optional workspace.json in this snapshot."""
 
     agent: Agent | None = None
     provider_args: dict[str, tuple[str, ...]] = field(default_factory=dict)
@@ -754,12 +755,42 @@ def _workspace_entries(paths: Paths) -> list[Path]:
     )
 
 
+def _workspace_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in fields:
+            raise ValueError("workspace JSON must not contain duplicate keys")
+        fields[key] = value
+    return fields
+
+
+def _workspace_json_constant(value: str) -> None:
+    raise ValueError("workspace JSON must not contain non-finite numbers")
+
+
 def _read_workspace_settings(path: Path) -> dict[str, Any]:
     """Missing workspace settings inherit defaults; malformed/unsafe files are errors."""
+    legacy = path.with_name("WORKSPACE.md")
+    if legacy.exists() or legacy.is_symlink():
+        raise ValueError(f"{legacy}: legacy workspace settings require the home migration")
     try:
-        return frontmatter.read(path).fields
+        with os.fdopen(os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK), "rb") as file:
+            if not stat.S_ISREG(os.fstat(file.fileno()).st_mode):
+                raise ValueError("expected a regular file")
+            raw = file.read().decode("utf-8")
     except FileNotFoundError:
         return {}
+    try:
+        fields = json.loads(
+            raw, object_pairs_hook=_workspace_json_object, parse_constant=_workspace_json_constant
+        )
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"invalid workspace JSON at line {exc.lineno}, column {exc.colno}"
+        ) from exc
+    if not isinstance(fields, dict):
+        raise ValueError("workspace JSON must contain an object")
+    return fields
 
 
 def _load_workspaces(
@@ -1382,7 +1413,9 @@ def _configuration_signature(paths: Paths) -> _ConfigSignature:
             watched.append(root)
             if root.is_symlink():
                 continue
-            watched.extend((root / "WORKSPACE.md", root / "projects"))
+            watched.extend(
+                (paths.workspace_settings(root.name), root / "WORKSPACE.md", root / "projects")
+            )
             projects = root / "projects"
             if projects.is_dir() and not projects.is_symlink():
                 for directory in sorted(projects.iterdir()):

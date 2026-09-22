@@ -70,7 +70,7 @@ WORKSPACE: tuple[Entry, ...] = (
     Entry("drafts", USER, "legacy work product using the original folder name"),
     Entry("work", USER, "task files and retained work product"),
     Entry("uploads", REQUIRED, "chat attachments, one directory per turn"),
-    Entry("WORKSPACE.md", USER, "optional agent triple and provider arguments"),
+    Entry("workspace.json", USER, "optional agent triple and provider arguments"),
     Entry("heartbeat", USER, "optional gate scripts and their helpers"),
     Entry(".codex", EXTENSION, "Codex's own policy file"),
     Entry(".grok", EXTENSION, "Grok's own policy file"),

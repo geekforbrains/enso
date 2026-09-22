@@ -25,6 +25,7 @@ from .knowledge.catalog import Note, scan_roots
 from .knowledge.links import extract_links
 from .maintenance import UpdateError, read_json, write_json
 from .note_storage import discover_roots, publish, read_bytes, split_document
+from .workspace_migration import migrate_workspace_settings, workspace_settings_paths
 
 MARKER = ".migrations.json"
 
@@ -290,6 +291,12 @@ MIGRATIONS: tuple[Migration, ...] = (
         5, "make job executors and concurrency explicit", job_executor_paths, migrate_job_executors
     ),
     Migration(6, "run bundled health audits without an agent", audit_job_paths, migrate_audit_jobs),
+    Migration(
+        7,
+        "convert workspace settings to JSON",
+        workspace_settings_paths,
+        migrate_workspace_settings,
+    ),
 )
 
 

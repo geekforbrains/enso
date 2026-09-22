@@ -34,6 +34,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- **Breaking:** Workspace overrides now use `workspace.json`. Home revision 7 preserves
+  existing `WORKSPACE.md` settings as JSON, deletes the old files, and discards their
+  unused prose and YAML comments. Workspace instructions remain in `AGENTS.md`.
 - **Breaking:** `JOB.md` groups provider settings under `agent`, replaces prerun with
   `gate`, and uses explicit commands/timeouts for hooks. Home revision 5 migrates existing
   jobs and run history; old concurrency groups retain `on_busy: skip`. The bundled release

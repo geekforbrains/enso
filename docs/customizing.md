@@ -308,7 +308,7 @@ Everything that is not instructions or skills is configuration:
 | What | Where |
 | --- | --- |
 | Which chat locations use which workspace | `bindings` in [`config.json`](configuration.md) |
-| Which agent a workspace or job uses | `defaults`, workspace `WORKSPACE.md`, `JOB.md` |
+| Which agent a workspace or job uses | `defaults`, workspace `workspace.json`, `JOB.md` |
 | Provider permissions | [Provider-native controls](configuration.md#provider-permissions-and-installation-trust) and `providers.<name>.args` |
 | Credentials for agents and jobs | [Encrypted secrets](configuration.md#secrets), supplied through the CLI or job declarations |
 | Scheduled work | [`JOB.md`](jobs.md), its agent prompt or command, and optional gate/postrun scripts |

@@ -12,20 +12,20 @@ even when no binding selects it. Configuration writes validate this before savin
 
 ## Configuration ownership in 0.2.0
 
-Workspace settings live in `WORKSPACE.md`, projects in `PROJECT.md`, and jobs in `JOB.md`.
+Workspace settings live in `workspace.json`, projects in `PROJECT.md`, and jobs in `JOB.md`.
 `config.json` contains installation settings only.
 
 | Setting | Owning file in 0.2.0 |
 | --- | --- |
 | Transports, bindings, defaults, providers, and service options | Home `config.json` |
-| Optional workspace agent triple and provider-argument overrides | `workspaces/<name>/WORKSPACE.md` |
+| Optional workspace agent triple and provider-argument overrides | `workspaces/<name>/workspace.json` |
 | Project definition and workflow | `workspaces/<name>/projects/<KEY>/PROJECT.md` |
 | Job definition | `workspaces/<name>/jobs/<job>/JOB.md` |
 
-For example, `workspaces/team/WORKSPACE.md` holds `team`'s agent override, while
+For example, `workspaces/team/workspace.json` holds `team`'s agent override, while
 `"bindings": { "slack:C0123": "team" }` stays in `config.json`. The `workspaces` and `projects`
-blocks are rejected in `config.json`. `WORKSPACE.md` is optional: without it the workspace uses the installation defaults. Its settings are read
-fresh like bindings. The formats are [WORKSPACE.md](#workspacemd-in-020) and
+blocks are rejected in `config.json`. `workspace.json` is optional: without it the workspace uses the installation defaults. Its settings are read
+fresh like bindings. The formats are [workspace.json](#workspacejson) and
 [PROJECT.md](#projectmd-in-020) below.
 The [workspace layout](workspaces.md#ownership-in-020) owns paths, project scripts, qualified
 `<workspace>:<job>` references, and installation-wide concurrency groups.
@@ -40,7 +40,7 @@ them.
 `ENSO_WORKSPACE` and optional `--workspace`.
 
 The config schema is `version: 2`, Enso's
-workspace restriction mode is removed, and workspace settings load from `WORKSPACE.md`.
+workspace restriction mode is removed, and workspace settings load from `workspace.json`.
 [Provider permissions](#provider-permissions-and-installation-trust) owns the launch and
 trust contract. Version 1 is refused without parsing its fields, using
 one message: "This Enso home predates 0.2.0; automatic migration is unsupported:" followed by
@@ -48,9 +48,9 @@ the [migration guide's repository URL](migration.md). Managed migrations start a
 changing the version number alone is not a migration. An old database or home-level
 `jobs/` directory is also refused with that message.
 
-### WORKSPACE.md in 0.2.0
+### workspace.json
 
-The optional file contains YAML frontmatter with only these fields:
+The optional file contains a JSON object with only these fields:
 
 | Field | Contract |
 | --- | --- |
@@ -61,36 +61,36 @@ Omitting `agent` inherits `defaults`. Omitting a provider override inherits its 
 arguments; an explicit `args: []` replaces them with an empty list. The existing provider,
 model, and effort validation rules still apply. Partial triples, unknown fields, provider
 executable paths, model catalogs, bindings, credentials, and `restricted` are not accepted
-here. There is no workspace-name field: the directory supplies it. Markdown after the
-frontmatter may explain the settings; agent working guidance belongs in `AGENTS.md`.
+here. There is no workspace-name field: the directory supplies it. Agent working guidance
+belongs in `AGENTS.md`; this file contains configuration only, with no comments or prose.
 
-For example, `workspaces/team/WORKSPACE.md` can contain:
+For example, `workspaces/team/workspace.json` can contain:
 
-```yaml
----
-agent:
-  provider: claude
-  model: opus
-  effort: xhigh
-providers:
-  claude:
-    args: ["--permission-mode", "dontAsk"]
----
+```json
+{
+  "agent": {"provider": "claude", "model": "opus", "effort": "xhigh"},
+  "providers": {
+    "claude": {"args": ["--permission-mode", "dontAsk"]}
+  }
+}
 ```
 
 This changes `team`'s chat agent and its Claude arguments. Jobs retain their own saved
 agent triple, while workspace provider-argument overrides apply to chat, jobs, and
-Heartbeat. A missing file or an empty frontmatter mapping supplies no overrides; malformed
+Heartbeat. A missing file or an empty object (`{}`) supplies no overrides; malformed
 settings are reported with the file path, never silently treated as an absent file. An
-empty mapping is written as `---`, `{}`, `---` on three lines; an empty document or a
-frontmatter block without a mapping is invalid. Duplicate keys and non-text keys are
-rejected using the shared Markdown frontmatter rules. Workspace directories and this file
-must be real directories/files, not symbolic links; setup and audit preserve conflicting
-paths.
+empty document, non-object JSON, duplicate keys, and non-finite numbers are invalid.
+Workspace directories and this file must be real directories/files, not symbolic links;
+setup and audit preserve conflicting paths.
 
-Edit this file directly, preserving unrelated settings and explanatory Markdown.
-`enso config set` and `unset` edit only `config.json`; they do not edit `WORKSPACE.md`.
+Edit this file directly, preserving unrelated settings.
+`enso config set` and `unset` edit only `config.json`; they do not edit `workspace.json`.
 Configuration checks read settings from every discovered workspace, including unbound ones.
+
+Existing `WORKSPACE.md` files require the [workspace settings migration](migration.md#workspace-settings-migration).
+It preserves their frontmatter settings as JSON, deletes the Markdown files, and discards
+their explanatory text. Normal configuration loading rejects leftover `WORKSPACE.md` files
+instead of silently losing their overrides.
 
 ### PROJECT.md in 0.2.0
 
@@ -178,7 +178,7 @@ path. Neither command prints the document or a value.
 `enso serve` checks `config.json`, workspace settings, and project definitions before each chat turn, each job
 scheduler tick, and whenever a transport or chat command resolves a binding. Files are
 parsed again when they change, including creation, replacement, or removal of
-`WORKSPACE.md` or `PROJECT.md`. Thus `bindings`, `defaults`, `providers`, `agent`, `runs`,
+`workspace.json` or `PROJECT.md`. Thus `bindings`, `defaults`, `providers`, `agent`, `runs`,
 `heartbeat`, workspace overrides, and project definitions take effect on the next turn or tick without a
 restart, however the file was written. A turn or
 job run keeps the snapshot it started with; a queued message runs in the workspace it was
@@ -194,7 +194,7 @@ to the service unit also needs `enso service install`; see
 
 An invalid installation or workspace file is logged once per observed revision, and chat
 turns and jobs keep the last valid combined snapshot until all settings are valid again.
-Removing `WORKSPACE.md` is valid and restores inheritance on the next snapshot.
+Removing `workspace.json` is valid and restores inheritance on the next snapshot.
 [Heartbeat](heartbeat.md) is stricter: it stops admitting assessments and cancels running
 ones while the file is invalid.
 
@@ -306,7 +306,7 @@ Each agent job supplies its own triple in `JOB.md.agent`; changing chat defaults
 workspace's `agent` does not change an existing job. Command and integration stages omit
 the triple because they do not invoke a provider.
 
-A workspace may replace the whole triple in `WORKSPACE.md` with an `agent` block
+A workspace may replace the whole triple in `workspace.json` with an `agent` block
 (also all three keys), or replace one provider's flags with `providers.<name>.args`. Providers with an ordered
 reasoning ladder clamp effort down to the model's maximum, with a log line. Antigravity and
 OpenCode have the different semantics described below.
@@ -314,7 +314,7 @@ OpenCode have the different semantics described below.
 Provider-argument overrides apply to chat turns, jobs, and heartbeat assessments; they
 replace the global argument list rather than appending to it.
 
-Only workspaces with overrides need a `WORKSPACE.md`. The directory
+Only workspaces with overrides need a `workspace.json`. The directory
 `~/.enso/workspaces/<name>` must exist for every binding and job that names it;
 `enso workspace create NAME` scaffolds it. See [Workspaces](workspaces.md).
 
@@ -325,7 +325,7 @@ organize context and ownership; they do not isolate agents, credentials, or file
 other workspaces. Teams needing separation run separate installations on separate machines
 or VPSs. [Concepts](concepts.md#installation-trust-model) owns this trust model.
 
-Enso has no workspace restriction mode. `restricted` is rejected in `WORKSPACE.md`,
+Enso has no workspace restriction mode. `restricted` is rejected in `workspace.json`,
 including when its value is `false`; the old `workspaces` config block is also rejected.
 Chat, jobs, and Heartbeat start their provider in the workspace directory with the configured arguments. An override replaces
 the global list, including an explicit empty list; removing the old mode does not change

@@ -16,7 +16,7 @@ Jobs and Heartbeat scripts use their owning workspace, as detailed in the [owner
 ```text
 ~/.enso/workspaces/<name>/
 ├── AGENTS.md          # purpose, scope, terms, approval rules for this workspace
-├── WORKSPACE.md       # optional agent triple and provider arguments
+├── workspace.json    # optional agent triple and provider arguments
 ├── CLAUDE.md          # symlink -> AGENTS.md
 ├── skills/            # skills unique to this workspace
 ├── jobs/              # scheduled and stage jobs
@@ -35,7 +35,7 @@ Jobs and Heartbeat scripts use their owning workspace, as detailed in the [owner
 | `jobs/` | Scheduled and stage jobs, identified as `<workspace>:<job>`. |
 | `projects/` | Project definitions and scripts, each under `<KEY>/`; see [Tasks](tasks.md#projects-and-stages). |
 | `heartbeat/` | Optional root, created only when workspace gate scripts are used. |
-| `WORKSPACE.md` | Optional settings; [Configuration](configuration.md#workspacemd-in-020) owns its format and reload behavior. |
+| `workspace.json` | Optional settings; [Configuration](configuration.md#workspacejson) owns its format and reload behavior. |
 | `work/` | Task files and retained output, grouped by task; use an established repository or destination when one exists. |
 | `uploads/` | Chat attachments. Enso writes here; nothing else should. |
 | `skills/` | Skills only this workspace needs. |
@@ -47,7 +47,7 @@ is the directory name, and there is no other valid location. The workspace and i
 a second identity. The scaffold creates `jobs/`, `projects/`, `work/`, `uploads/`,
 and `skills/`. Durable notes live in the home's `shared/knowledge/`. The empty skills
 directory keeps the provider discovery links valid even before you add a workspace skill.
-It creates neither `WORKSPACE.md` nor `heartbeat/`; adding either later requires no restart.
+It creates neither `workspace.json` nor `heartbeat/`; adding either later requires no restart.
 
 ### Consolidating knowledge and work files
 
@@ -121,7 +121,7 @@ $ENSO_HOME/
 ├── skills/                       # shared skills
 └── workspaces/<name>/
     ├── AGENTS.md                 # purpose and working conventions for the agent
-    ├── WORKSPACE.md              # optional agent triple and provider arguments
+    ├── workspace.json           # optional agent triple and provider arguments
     ├── jobs/<job>/
     │   ├── JOB.md
     │   ├── run.sh                # optional command script; filenames are chosen by the job
@@ -147,7 +147,7 @@ Enso's restriction mode is removed without silently changing provider arguments.
 | Installation settings and bindings | Home `config.json` | Installation |
 | Shared guidance, knowledge, and skills | Home `AGENTS.md`, `shared/knowledge/`, and `skills/` | Installation |
 | Workspace guidance, work files, uploads, and skills | Files in the workspace | Containing workspace |
-| Workspace agent and provider arguments | `WORKSPACE.md` | Containing workspace |
+| Workspace agent and provider arguments | `workspace.json` | Containing workspace |
 | Jobs and their supporting scripts | `jobs/<job>/` in the workspace | Containing workspace |
 | Project definitions and scripts | `projects/<KEY>/` in the workspace | Containing workspace |
 | Heartbeat gate scripts and helpers | `heartbeat/` in the workspace | The follow-up's recorded workspace |
@@ -380,7 +380,7 @@ Each present entry is reported in one of five categories:
 | --- | --- | --- |
 | `required` | Enso's, and missing it is an error | `AGENTS.md`, `skills/`, `shared/`, `workspaces/`, `.git` |
 | `managed` | Enso's, written when needed | `enso.db`, `cache/`, `runtime/`, `.bundles.json` |
-| `user` | Enso may create the root; what is inside is yours | `.gitignore`, `WORKSPACE.md`, a workspace `heartbeat/` |
+| `user` | Enso may create the root; what is inside is yours | `.gitignore`, `workspace.json`, a workspace `heartbeat/` |
 | `extension` | A provider or tool's own file, preserved and never read | `.codex/`, `.grok/`, `opencode.json` |
 | `unexpected` | Nothing in the table claims this name | whatever you left there |
 
@@ -410,7 +410,7 @@ to run. Nothing writes a script for you.
 
 `--fix` only ever creates and repairs required directories, discovery links, and the permissions of
 the paths listed under `permissions` above. It never deletes a
-file, edits `AGENTS.md` or `WORKSPACE.md`, or changes content inside workspace directories.
+file, edits `AGENTS.md` or `workspace.json`, or changes content inside workspace directories.
 A real file or directory sitting where a link belongs, or a dangling symbolic link sitting where a
 directory belongs, is reported and left for you to move aside. Fixes run first and the
 report shows what remains, so a second `--fix` finds nothing to do.
@@ -514,7 +514,7 @@ rename or transfer; any reference repair needs a deliberate, case-specific plan.
 directory while its work or retained history still needs it.
 
 Let running turns, jobs, and beats finish before moving files. Workspace overrides live
-with the directory in `WORKSPACE.md`, so there is no configuration override block to remove.
+with the directory in `workspace.json`, so there is no configuration override block to remove.
 Run `enso config check` before and after archiving or deleting the directory; deletion
 needs the user's authorization. These changes
 need no Enso restart. Configuration validation catches missing binding and project
@@ -529,7 +529,7 @@ your chat bridge down. The same goes for a workspace a job names, and for the ho
 `enso serve` logs one line per failing root, naming the errors, and points at
 `enso workspace audit`.
 
-Malformed `WORKSPACE.md` settings use the separate
+Malformed `workspace.json` settings use the separate
 [configuration validation and reload rules](configuration.md#while-the-service-runs).
 
 The other exception is a bound workspace directory that does not exist at all: `config check`

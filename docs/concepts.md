@@ -92,7 +92,7 @@ Enso's runtime state lives under one directory:
 [Connections](connections.md) owns the pairing lifecycle and private state. Prepared home,
 paired chat, valid configuration, and a successful provider reply are separate milestones.
 
-Workspace settings use `WORKSPACE.md`, and the
+Workspace settings use `workspace.json`, and the
 workspace directories are scaffolded. Jobs, projects, and Heartbeat scripts now use the
 [workspace ownership layout](workspaces.md#ownership-in-020).
 Installation support files shown here keep their documented purpose and
@@ -154,8 +154,8 @@ point for operating the installation and owns its bundled maintenance jobs.
 Every conversation, job, and beat names exactly one workspace. That workspace becomes the
 provider's working directory. Its `AGENTS.md` adds workspace-specific context to Enso's
 home-level instructions and any user-level instructions the provider loads. Optional
-`WORKSPACE.md` supplies settings as defined in
-[Configuration](configuration.md#workspacemd-in-020); see also
+`workspace.json` supplies settings as defined in
+[Configuration](configuration.md#workspacejson); see also
 [Customizing](customizing.md#instructions-agentsmd).
 
 ## Knowledge

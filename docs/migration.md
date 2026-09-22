@@ -105,6 +105,25 @@ Deleted definitions stay deleted. The step preflights every workspace, replaces 
 atomically, preserves permissions and can resume partial publication. Fresh installations
 seed the command job directly; revision 5 remains unchanged.
 
+## Workspace settings migration
+
+Home revision **7** converts each existing workspace's `WORKSPACE.md` frontmatter to
+`workspace.json`. Agent and provider-argument overrides keep their values, including empty
+argument lists. The migration deletes the old Markdown file and deliberately discards its
+body and YAML comments; these were never loaded as agent instructions. Working guidance
+belongs in `AGENTS.md`. Workspaces without overrides remain without a settings file.
+
+All conversions are checked before writing. Malformed settings, linked or nonregular paths,
+and conflicting JSON destinations stop the preview and migration. An exact JSON file left
+by an interrupted conversion is recognized on retry. Both filenames are covered by the
+updater's rollback snapshot, and JSON is published atomically before its source is removed.
+Normal startup accepts only the new format and reports any remaining legacy file.
+
+Managed updates apply this step automatically. Editable installations use the
+[manual development migration](development.md#manual-development-migrations) before refresh.
+Installed instructions and skills are not rewritten by this format conversion; any custom
+references or scripts that edit `WORKSPACE.md` must be updated to the new JSON format.
+
 ## Declare everything the step changes
 
 `plan(paths)` calls each pending step's `paths` function without changing the home. These

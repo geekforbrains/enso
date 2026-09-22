@@ -191,7 +191,7 @@ def test_init_reports_and_preserves_path_conflicts(enso_home, relative):
 
 @pytest.mark.parametrize(
     "directory",
-    ["skills", "shared", "workspaces/default/uploads", "workspaces/default/WORKSPACE.md"],
+    ["skills", "shared", "workspaces/default/uploads", "workspaces/default/workspace.json"],
 )
 def test_init_rejects_symlink_escape_without_writing_outside_home(enso_home, tmp_path, directory):
     outside = tmp_path / "outside"

@@ -97,14 +97,14 @@ def test_fix_preserves_linked_workspace_paths_without_writing_through_them(
     marker = outside / "keep.md"
     marker.write_text("User-owned content\n")
     (root / entry).symlink_to(outside, target_is_directory=True)
-    settings = root / "WORKSPACE.md"
-    settings.write_text("---\n{}\n---\n\nKeep this explanation.\n")
+    settings = root / "workspace.json"
+    settings.write_text('{"providers": {"codex": {"args": []}}}\n')
     report = audit.audit_workspace(enso_home, "default", fix=True, user_dirs=[])
     assert not report.ok
     assert (root / entry).is_symlink()
     assert list(outside.iterdir()) == [marker]
     assert marker.read_text() == "User-owned content\n"
-    assert settings.read_text().endswith("Keep this explanation.\n")
+    assert settings.read_text() == '{"providers": {"codex": {"args": []}}}\n'
     assert not any(f.check == "unexpected" for f in report.findings)
 
 

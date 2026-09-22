@@ -33,10 +33,10 @@ When the user requests a permission change:
 2. Consult that provider's current documentation for its supported permission controls.
    Preserve existing policy files and unrelated settings. Explain the proposed access
    change; do not silently loosen permissions or substitute bypass flags.
-3. Configure the intended arguments explicitly. In the workspace's `WORKSPACE.md`,
+3. Configure the intended arguments explicitly. In the workspace's `workspace.json`,
    `providers.PROVIDER.args` replaces the global provider argument list; an empty list
-   inherits no global flags. For example, setting `providers: {codex: {args: []}}` in
-   `workspaces/team/WORKSPACE.md` passes no extra Codex flags. Preserve other settings and
+   inherits no global flags. For example, setting `"providers": {"codex": {"args": []}}` in
+   `workspaces/team/workspace.json` passes no extra Codex flags. Preserve other settings and
    run `enso config check` after editing; `enso config set` edits installation settings only.
    This alone does not prove a policy loaded or establish its effective permissions.
 4. Verify intended allowed and denied operations using disposable files and the actual

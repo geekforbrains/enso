@@ -27,7 +27,7 @@ report it missing; restore it or use `enso workspace create default` for an empt
 ├── .agents/skills -> ../skills
 └── workspaces/<name>/
     ├── AGENTS.md             # purpose, scope, terms, approval rules for this workspace
-    ├── WORKSPACE.md           # optional agent triple and provider arguments
+    ├── workspace.json        # optional agent triple and provider arguments
     ├── CLAUDE.md -> AGENTS.md
     ├── skills/               # skills unique to this workspace
     ├── jobs/                 # scheduled and stage jobs
@@ -67,31 +67,28 @@ or operator-initiated pairing may add bindings. Unknown senders cannot authorize
 only the fixed notice, with no provider work or attachment download. In an unbound
 channel, only mentioning the bot triggers that notice. See the [connection rules](https://github.com/geekforbrains/enso/blob/main/docs/connections.md#access-in-020).
 
-Bindings live in `~/.enso/config.json`. Keys are `slack:C…` (a channel), `slack:dm:U…` or `slack:dm:W…` (a user's DM; `W…` is an Enterprise Grid org-wide user id), or `telegram:<user id>`; values are workspace names. Workspace overrides live in the optional `WORKSPACE.md`, not in `config.json`:
+Bindings live in `~/.enso/config.json`. Keys are `slack:C…` (a channel), `slack:dm:U…` or `slack:dm:W…` (a user's DM; `W…` is an Enterprise Grid org-wide user id), or `telegram:<user id>`; values are workspace names. Workspace overrides live in the optional `workspace.json`, not in `config.json`:
 
 ```json
 { "bindings": {"slack:C0BP5BQF6UF": "meteor"} }
 ```
 
-For example, `workspaces/meteor/WORKSPACE.md`:
+For example, `workspaces/meteor/workspace.json`:
 
-```yaml
----
-agent:
-  provider: codex
-  model: sol
-  effort: xhigh
-providers:
-  claude:
-    args: ["--permission-mode", "dontAsk"]
----
+```json
+{
+  "agent": {"provider": "codex", "model": "sol", "effort": "xhigh"},
+  "providers": {
+    "claude": {"args": ["--permission-mode", "dontAsk"]}
+  }
+}
 ```
 
-An `agent` block needs all three keys. Provider `args` replace the global list, including an empty list. Omitting the file inherits installation defaults. Edit it directly, preserving other settings and any explanatory Markdown; run `enso config check` afterward. Do not put credentials, executable paths, bindings, or a workspace-name field here. The format and validation belong to [Configuration](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#workspacemd-in-020).
+An `agent` block needs all three keys. Provider `args` replace the global list, including an empty list. Omitting the file inherits installation defaults. Edit the JSON directly, preserving other settings; run `enso config check` afterward. Put working guidance in `AGENTS.md`, not this configuration file. Do not put credentials, executable paths, bindings, comments, or a workspace-name field here. The format and validation belong to [Configuration](https://github.com/geekforbrains/enso/blob/main/docs/configuration.md#workspacejson).
 
 A job belongs to the workspace containing `jobs/<job>/JOB.md` and uses a `<workspace>:<job>` reference. Projects live in `projects/<KEY>/PROJECT.md`; neither file repeats its workspace. Bindings, workspace settings, and project definitions are read fresh for each operation, with no restart. A queued turn keeps its arrival workspace; removing its binding drops it before provider startup. Use `enso slack lookup-channel` for ids; never guess one.
 
-The workspace scaffold keeps `skills/` and its provider links ready even when empty. `WORKSPACE.md` and the workspace `heartbeat/` root are optional and are not created by scaffolding. Existing `knowledge/` and `drafts/` directories remain supported, but new workspaces do not create them. Audits preserve absent optional content folders; initialization and audits never move existing notes or work files.
+The workspace scaffold keeps `skills/` and its provider links ready even when empty. `workspace.json` and the workspace `heartbeat/` root are optional and are not created by scaffolding. Existing `knowledge/` and `drafts/` directories remain supported, but new workspaces do not create them. Audits preserve absent optional content folders; initialization and audits never move existing notes or work files.
 
 ## Skills
 
@@ -111,4 +108,4 @@ This applies only to workspaces other than the required `default` operator works
 
 Remove or repoint its bindings, disable its jobs, resolve open project tasks, and review active and paused beats with `enso heartbeat list --workspace NAME` (page through results if needed). Close beats only when the retirement request includes ending that work; pausing alone leaves the workspace reference in place. Beats cannot transfer workspaces, and moving job or project files does not reassign existing records. There is no automated workspace rename or transfer: plan any reference repair for the specific case and keep the directory while its work or retained history needs it.
 
-Let running turns, jobs, and beats finish before moving their files. Overrides live in its `WORKSPACE.md`; there is no workspace override entry in `config.json` to remove. Confirm with `enso config check`, then archive the directory or delete it with the user's authorization, and check configuration again. These changes need no Enso restart. See [Workspaces](https://github.com/geekforbrains/enso/blob/main/docs/workspaces.md#creating-and-retiring) for the lifecycle.
+Let running turns, jobs, and beats finish before moving their files. Overrides live in its `workspace.json`; there is no workspace override entry in `config.json` to remove. Confirm with `enso config check`, then archive the directory or delete it with the user's authorization, and check configuration again. These changes need no Enso restart. See [Workspaces](https://github.com/geekforbrains/enso/blob/main/docs/workspaces.md#creating-and-retiring) for the lifecycle.
