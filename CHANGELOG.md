@@ -27,6 +27,11 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- **Breaking:** `default` is the required operator workspace for installation-wide jobs.
+  Configuration checks, doctor, and audits report it missing even without bindings;
+  configuration writes refuse it before saving. Restore it or run
+  `enso workspace create default` if previously removed. Setup's private-chat binding and
+  notification defaults remain customizable.
 - **Breaking:** `enso-browser` uses the official Playwright CLI directly for browser
   sessions and persistent profiles. Install Node.js, Chrome, and `@playwright/cli` yourself
   when browser work is needed; Enso no longer provides browser runtime code or configuration.

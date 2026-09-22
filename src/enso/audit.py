@@ -24,7 +24,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from . import layout, skills, workspaces
-from .config import Config, Paths, ProjectConfig, require_workspace, valid_workspace_name
+from .config import (
+    Config,
+    Paths,
+    ProjectConfig,
+    require_default_workspace,
+    require_workspace,
+    valid_workspace_name,
+)
 from .jobs import load_jobs
 from .skills import ERROR, WARNING
 
@@ -253,6 +260,10 @@ def audit_home(
     findings.extend(_check_skills(skills.resolve(paths, user_dirs=user_dirs), "enso"))
     findings.extend(_check_jobs(paths))
     findings.extend(_check_workspace_entries(paths))
+    try:
+        require_default_workspace(paths)
+    except ValueError as exc:
+        findings.append(Finding(DIRECTORY, ERROR, str(exc)))
     findings.extend(_check_permissions(paths))
     findings.extend(_check_stale(paths))
     result.layout = _scan_entries(home, layout.HOME, findings)
@@ -301,7 +312,7 @@ def audit_workspace(
     findings.extend(_check_skills(skills.resolve(paths, name, user_dirs=user_dirs), "workspace"))
     findings.extend(_check_scripts(paths, projects))
     result.layout = _scan_entries(root, layout.WORKSPACE, findings)
-    if bound is not None and not bound and not jobs:
+    if name != "default" and bound is not None and not bound and not jobs:
         findings.append(
             Finding(ORPHAN, WARNING, "nothing is bound to this workspace and no job names it")
         )

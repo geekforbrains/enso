@@ -213,7 +213,9 @@ the last agent stage. Worktrees do not isolate shared services or ports.
 
 ## Bundled jobs
 
-Maintenance jobs belong to [the default workspace](workspaces.md#ownership-in-020).
+Maintenance jobs start in the required [`default` operator workspace](workspaces.md#operator-workspace),
+alongside any other jobs with installation-wide responsibilities. Their settings and scripts
+remain yours to customize.
 
 `enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
 `~/.enso/workspaces/default/jobs/` when their directories are missing. `enso init` prepares the home but does

@@ -192,6 +192,34 @@ def test_dynamic_names_are_data_rather_than_schema_keys(enso_home: Paths, raw_co
     assert problems == []
 
 
+@pytest.mark.parametrize("replacement", ["missing", "file", "symlink"])
+def test_default_is_required_independently_of_bindings(enso_home, raw_config, replacement):
+    root = enso_home.workspace("default")
+    root.rename(enso_home.workspace("personal"))
+    raw_config["bindings"] = {key: "personal" for key in raw_config["bindings"]}
+    if replacement == "file":
+        root.write_text("keep this")
+    elif replacement == "symlink":
+        root.symlink_to("personal", target_is_directory=True)
+
+    config, problems, _ = parse_config(raw_config, enso_home)
+
+    assert config is None
+    assert any("required operator workspace 'default'" in p for p in problems)
+
+
+def test_default_does_not_require_its_original_dm_or_notify_binding(enso_home, raw_config):
+    enso_home.workspace("personal").mkdir()
+    raw_config["bindings"] = {"slack:dm:U2": "personal"}
+    raw_config["transports"]["slack"]["notify"] = "C2"
+
+    config, problems, _ = parse_config(raw_config, enso_home)
+
+    assert config is not None and problems == []
+    assert config.bindings == {"slack:dm:U2": "personal"}
+    assert config.default_notify() == ("slack", "C2")
+
+
 # A member name is arbitrary text: a newline would forge a problem line of its own and a
 # right-to-left override would reorder one, so anything but ordinary text is JSON-escaped.
 @pytest.mark.parametrize("key", ["max\nbytes", "max bytes", "level\u202e", "\u0661\u0662"])

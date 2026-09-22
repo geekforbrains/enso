@@ -481,6 +481,17 @@ def require_workspace(paths: Paths, name: str) -> Path:
     return root
 
 
+def require_default_workspace(paths: Paths) -> Path:
+    """The operator workspace is required even when no binding or job uses it."""
+    try:
+        return require_workspace(paths, "default")
+    except ValueError as exc:
+        raise ValueError(
+            f"required operator workspace 'default': {exc}; restore it, or use "
+            "`enso workspace create default` if it was removed"
+        ) from exc
+
+
 def resolve_workspace(
     paths: Paths,
     workspace: str | None = None,
@@ -1183,6 +1194,10 @@ def parse_config(
 
     providers = _parse_providers(raw.get("providers"), problems, warnings, unknown)
     defaults = parse_agent(raw.get("defaults"), "defaults", providers, problems, unknown)
+    try:
+        require_default_workspace(paths)
+    except ValueError as exc:
+        problems.append(str(exc))
     workspaces = _load_workspaces(paths, providers, problems)
     bindings = _parse_bindings(
         raw.get("bindings"),

@@ -48,6 +48,25 @@ def finish(root: Path) -> None:
     (root / "AGENTS.md").write_text("# a real workspace\n")
 
 
+def test_default_is_required_even_when_auditing_another_workspace(enso_home):
+    workspaces.seed_home(enso_home)
+    enso_home.workspace("default").rename(enso_home.workspace("personal"))
+    finish(enso_home.workspace("personal"))
+
+    report = audit.audit(enso_home, ["personal"], fix=True, user_dirs=USER_DIRS)
+
+    assert not report.ok and report.workspaces[0].ok
+    finding = next(f for f in report.home.findings if "required operator workspace" in f.message)
+    assert finding.severity == audit.ERROR and not finding.fixable
+    assert not enso_home.workspace("default").exists()
+
+
+def test_default_is_not_orphaned_when_bindings_and_jobs_are_removed(enso_home):
+    finish(enso_home.workspace("default"))
+    report = audit.audit_workspace(enso_home, "default", bound=[], user_dirs=USER_DIRS)
+    assert report.ok and report.findings == []
+
+
 def break_workspace(root: Path, enso_home: Paths) -> None:
     """One of everything the audit reports; ``AGENTS.md`` is left missing."""
     for name in ("jobs", "projects"):

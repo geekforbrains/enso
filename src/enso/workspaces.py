@@ -124,7 +124,15 @@ def _record_bundle(paths: Paths, relative: str, text: str) -> None:
 
 def workspace_template(name: str) -> str:
     """The workspace ``AGENTS.md`` template stamped with ``name``: what a new workspace gets."""
-    return _stamp(_bundled("workspace/AGENTS.md"), {"workspace_name": name})
+    purpose = (
+        "Operate this Enso installation across its workspaces and keep installation-wide jobs here."
+        "\nThe `default` operator workspace is required; do not rename or remove it."
+        if name == "default"
+        else "<!-- What is this workspace for? One or two sentences. -->"
+    )
+    return _stamp(
+        _bundled("workspace/AGENTS.md"), {"workspace_name": name, "workspace_purpose": purpose}
+    )
 
 
 def seed_home(paths: Paths) -> list[str]:

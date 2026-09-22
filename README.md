@@ -66,9 +66,9 @@ curl -fsSL https://github.com/geekforbrains/enso/releases/latest/download/instal
 The installer supplies Enso and its dependencies without a source checkout. Make
 sure `~/.local/bin` is on your `PATH`, then run `enso setup`.
 
-Setup connects your chat, prepares a default workspace, and offers to run Enso as a
-background service. Once it is running, say `!help` in Slack or `/help` in Telegram,
-then send a normal message to check that Enso can answer.
+Setup connects your private chat to the required `default` operator workspace and offers
+to run Enso as a background service. Once it is running, say `!help` in Slack or `/help`
+in Telegram, then send a normal message to check that Enso can answer.
 
 Check GitHub for a new release and upgrade when ready:
 

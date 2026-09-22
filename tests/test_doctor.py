@@ -44,6 +44,18 @@ def healthy(enso_home: Paths, raw_config: dict) -> None:
     (enso_home.workspace("default") / "AGENTS.md").write_text("# default\n")
 
 
+def test_doctor_and_config_check_fail_without_unbound_default(enso_home, raw_config, unit):
+    raw_config["bindings"] = {}
+    healthy(enso_home, raw_config)
+    enso_home.workspace("default").rename(enso_home.workspace("personal"))
+
+    for command in (("config", "check"), ("doctor",)):
+        result = CliRunner().invoke(app, [*command, "--json"])
+        report = json.loads(result.stdout)
+        assert result.exit_code == 1 and not report["ok"]
+        assert "required operator workspace 'default'" in result.stdout
+
+
 def test_a_healthy_home_is_ok_everywhere(enso_home: Paths, raw_config: dict, unit: Path) -> None:
     healthy(enso_home, raw_config)
     write_job(enso_home)

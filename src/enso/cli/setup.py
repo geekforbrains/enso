@@ -126,7 +126,7 @@ def setup_wizard() -> None:
         typer.echo(line)
     credentials = _credentials(TRANSPORTS[transport])
     typer.echo(
-        "Pairing grants your account access and selects the default workspace. A personal "
+        "Pairing binds your private chat to the required default operator workspace. A personal "
         "workspace is not confidential from other agents in this installation. Binding a "
         "channel trusts all its human participants."
     )

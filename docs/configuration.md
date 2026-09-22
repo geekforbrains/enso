@@ -7,6 +7,8 @@ integration-specific user-level state Enso may inspect or create.
 `enso config check` validates installation, workspace, and project settings and lists every
 problem at once; `enso serve` refuses to start on a problem. `enso config show` prints `config.json`
 with tokens redacted.
+The required [`default` operator workspace](workspaces.md#operator-workspace) must exist,
+even when no binding selects it. Configuration writes validate this before saving.
 
 ## Configuration ownership in 0.2.0
 

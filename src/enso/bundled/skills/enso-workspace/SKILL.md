@@ -11,6 +11,12 @@ A workspace is a directory under `~/.enso/workspaces/<name>`: the provider's wor
 
 Paths below show the default home; use `ENSO_HOME` instead of `~/.enso` when it is set.
 
+`default` is the required operator workspace for managing the installation and keeping
+installation-wide jobs. Setup binds the paired private chat to it; bindings and notification
+targets can change later. It has the same provider permissions as other workspaces.
+Never rename or retire it. `enso config check`, `enso doctor`, and the workspace audit
+report it missing; restore it or use `enso workspace create default` for an empty replacement.
+
 ```text
 ~/.enso/
 ├── AGENTS.md                 # shared instructions for every turn and job
@@ -100,6 +106,8 @@ Playwright CLI sessions and profiles. A workspace may record its intended sessio
 dedicated profile path in `AGENTS.md`; private browser data does not belong in `skills/`.
 
 ## Retiring a workspace
+
+This applies only to workspaces other than the required `default` operator workspace.
 
 Remove or repoint its bindings, disable its jobs, resolve open project tasks, and review active and paused beats with `enso heartbeat list --workspace NAME` (page through results if needed). Close beats only when the retirement request includes ending that work; pausing alone leaves the workspace reference in place. Beats cannot transfer workspaces, and moving job or project files does not reassign existing records. There is no automated workspace rename or transfer: plan any reference repair for the specific case and keep the directory while its work or retained history needs it.
 

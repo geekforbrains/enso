@@ -166,14 +166,28 @@ repeating them as ownership fields. Project scripts live alongside the definitio
 from that directory. External source repositories can remain at their configured paths.
 Internal records still retain the ownership needed to query and recover work correctly;
 moving a directory must not silently reassign recorded work. Missing or ambiguous ownership
-is an error. There is no required privileged workspace type.
+is an error.
 
-Fresh setup keeps the name `default` and places installation-maintenance jobs there:
-`workspaces/default/jobs/enso-audit/JOB.md` and
-`workspaces/default/jobs/enso-update/JOB.md`, referenced as `default:enso-audit` and
-`default:enso-update`. `default` is an ordinary workspace. Workspace-scoped commands require
-explicit or inherited context; [update notifications](cli.md#updates) use `default` when
-neither is supplied.
+### Operator workspace
+
+`workspaces/default/` is the required operator workspace. Use it to manage the installation
+across workspaces and to keep jobs with installation-wide responsibilities. Setup creates it,
+binds the paired operator's Slack DM or Telegram private chat to it, and uses that chat for
+notifications. Bindings and notification destinations remain freely configurable afterward;
+no operator identity or special permission role is enforced. Provider permissions follow the
+same rules as every other workspace.
+
+Bundled maintenance jobs start here as `default:enso-audit` and `default:enso-update`.
+Their instructions, settings, and schedules remain editable. Workspace-scoped commands still
+require explicit or inherited context; only [update notifications](cli.md#updates) fall back
+to `default` without it.
+
+Do not rename or retire `default`, even if no chat or job uses it. `config check`, `doctor`,
+and the workspace audit report a missing or linked directory as an error; configuration
+writes refuse it before saving. Restore a removed directory from backup, or run
+`enso workspace create default` to create an empty replacement, then apply the existing
+configuration to install missing bundled jobs. Creating a replacement does not restore old
+content or transfer records. Audit `--fix` does not recreate the workspace.
 
 ## Context selection in 0.2.0
 
@@ -329,6 +343,7 @@ The audit checks, each finding carrying the check id shown:
 
 | Check | Id | Severity | `--fix` behaviour |
 | --- | --- | --- | --- |
+| The required `default` operator workspace is a real directory | `directory` | error | Reports only; restore it or use `enso workspace create default` |
 | Required directories exist inside an existing workspace | `directory` | error | Creates them |
 | `CLAUDE.md` is a symlink to `AGENTS.md` | `link` | error | Creates or repoints the link |
 | `.claude/skills` and `.agents/skills` are symlinks to `../skills` | `link` | error | Creates or repoints the link |
@@ -340,7 +355,7 @@ The audit checks, each finding carrying the check id shown:
 | No skill name appears in both the workspace and enso scope | `skill-collision` | error | Reports only |
 | No skill name collides with a user-level skill | `skill-collision` | warning | Reports only |
 | No `enso-*` skill or job exists that Enso did not install | `reserved` | warning | Reports only |
-| The workspace is bound, or named by a job | `orphan` | warning | Reports only |
+| A workspace other than `default` is bound, or named by a job | `orphan` | warning | Reports only |
 | A project command that is one `./script` beside `PROJECT.md` finds it present and executable | `script` | warning | Reports only |
 | Unexpected entries at the home's or a workspace's top level, in `shared/`, or under `workspaces/` | `unexpected` | warning | Reports only |
 | A dangling optional link, or a link or file in place of a real `runtime/` or `cache/` directory | `link`, `directory` | warning | Reports only |
@@ -413,8 +428,8 @@ that Enso runs itself, including `command` and `integrate` stages whose `JOB.md`
 provider, model, and effort. Without a readable configuration, it lists only jobs that
 can be parsed without one and skips the orphan and script checks because bindings, stage
 jobs, and project commands may be unknown. `enso doctor` reports `JOB.md` parsing
-problems; the layout audit does not. An orphan workspace — one nothing is bound to and no job names — is a warning, not an
-error. So is an unexpected top-level entry: Enso tells you it is there and leaves it
+problems; the layout audit does not. An unused workspace is an orphan warning, except for
+the required `default`. An unexpected top-level entry is also a warning: Enso leaves it
 alone. Files the CLIs themselves drop inside `.claude/`, such as Claude Code's
 `.cc-writes/`, are expected and not reported, and neither is `.DS_Store`.
 
@@ -488,8 +503,9 @@ links. Then bind a conversation to it in `config.json`; the next message in that
 conversation lands in the new workspace, with no restart. See
 [Configuration](configuration.md).
 
-To retire one, remove or repoint its bindings, disable its jobs, and resolve open project
-tasks. Inspect active and paused beats with `enso heartbeat list --workspace NAME`, paging
+The required [operator workspace](#operator-workspace), `default`, cannot be retired or renamed.
+To retire another workspace, remove or repoint its bindings, disable its jobs, and resolve
+open project tasks. Inspect active and paused beats with `enso heartbeat list --workspace NAME`, paging
 through results if needed; close work only when the retirement request authorizes ending it.
 Pausing a beat keeps its workspace reference. Beats cannot transfer workspaces, and moving
 job or project files does not reassign existing records. There is no automated workspace

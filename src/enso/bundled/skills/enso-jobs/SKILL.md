@@ -20,6 +20,8 @@ A job is `$ENSO_HOME/workspaces/<workspace>/jobs/<job>/JOB.md` (`~/.enso` is the
 A job's `notify` only routes runner-generated alerts; it does not become the destination of commands inside the prompt. Scheduled jobs have no originating conversation, so an untargeted `enso message send "text"` uses the first configured transport's notify target. To send a successful result somewhere specific, name it explicitly: `enso message send --to slack:C0BP5BQF6UF "text"`.
 
 Use `<workspace>:<job>` for every job reference, for example `team:digest`.
+Put installation-wide responsibilities in the required `default` operator workspace;
+keep workspace-specific jobs with their workspace.
 `job create` selects its workspace from `--workspace` or `ENSO_WORKSPACE`; neither defaults
 to `default`. Job and run lists currently cover the installation. `ENSO_JOB` contains
 the qualified reference, and job and concurrency-group locks live in `runtime/locks/`.

@@ -2,7 +2,7 @@
 
 ## Purpose
 
-<!-- What is this workspace for? One or two sentences. -->
+{{workspace_purpose}}
 
 ## Scope
 

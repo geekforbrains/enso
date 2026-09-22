@@ -148,6 +148,8 @@ whole machine unless you say otherwise.
 
 Names are lowercase kebab-case, and a workspace lives at `~/.enso/workspaces/<name>`. The
 layout is fixed and Enso keeps it that way; see [Workspaces](workspaces.md).
+The required [`default` operator workspace](workspaces.md#operator-workspace) is the starting
+point for operating the installation and owns its bundled maintenance jobs.
 
 Every conversation, job, and beat names exactly one workspace. That workspace becomes the
 provider's working directory. Its `AGENTS.md` adds workspace-specific context to Enso's

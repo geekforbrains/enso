@@ -89,7 +89,14 @@ def test_home_copied_bundled_content_mirrors_the_home(enso_home: Paths) -> None:
             relative = Path("workspaces/default") / relative
         assert (enso_home.home / relative).read_text() == expected
         assert set(re.findall(r"\{\{\w+\}\}", expected)) <= {"{{prerun_output}}"}
-    stamped = (bundled / template).read_text().replace("{{workspace_name}}", "meteor")
+    stamped = (
+        (bundled / template)
+        .read_text()
+        .replace("{{workspace_name}}", "meteor")
+        .replace(
+            "{{workspace_purpose}}", "<!-- What is this workspace for? One or two sentences. -->"
+        )
+    )
     assert (root / "AGENTS.md").read_text() == stamped and "{{" not in stamped
 
 

@@ -64,6 +64,8 @@ main()
     assert (enso_home.home / ".git").is_dir()
     root = enso_home.workspace("default")
     assert (root / "work").is_dir() and enso_home.knowledge.is_dir()
+    assert "installation-wide jobs" in (root / "AGENTS.md").read_text()
+    assert "do not rename or remove it" in (root / "AGENTS.md").read_text()
     assert not (root / "knowledge").exists() and not (root / "drafts").exists()
     # Filling the emitted example must work without deleting obsolete settings first.
     example["transports"]["slack"].update(bot_token="xoxb-test", app_token="xapp-test", notify="C1")
@@ -241,6 +243,44 @@ def test_apply_invalid_input_aggregates_and_preserves_active_config(enso_home, r
     assert code == 1 and not report["applied"] and len(report["problems"]) == 3
     assert enso_home.config.read_bytes() == previous
     assert not enso_home.workspace_jobs("default").exists()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ("apply", "--file", "-"),
+        ("set", "defaults.effort", "high"),
+        ("unset", "agent.timeout"),
+    ],
+)
+def test_config_writes_refuse_missing_default_before_saving(enso_home, raw_config, arguments):
+    enso_home.workspace("default").rename(enso_home.workspace("personal"))
+    raw_config["bindings"] = {key: "personal" for key in raw_config["bindings"]}
+    save_config(enso_home, raw_config)
+    before = enso_home.config.read_bytes()
+
+    code, report = invoke("config", *arguments, "--json", input=json.dumps(raw_config))
+
+    assert code == 1 and not report["ok"] and not report["applied"]
+    assert any("required operator workspace 'default'" in p for p in report["problems"])
+    assert enso_home.config.read_bytes() == before
+    assert not enso_home.workspace("default").exists()
+
+
+def test_removed_default_during_job_seeding_returns_partial_write_report(
+    enso_home, raw_config, monkeypatch
+):
+    seed = workspaces.seed_jobs
+
+    def disappear(paths, agent):
+        paths.workspace("default").rename(paths.workspace("personal"))
+        return seed(paths, agent)
+
+    monkeypatch.setattr(workspaces, "seed_jobs", disappear)
+    code, report = invoke("config", "apply", "--file", "-", "--json", input=json.dumps(raw_config))
+
+    assert code == 1 and report["applied"] and not report["jobs_complete"]
+    assert "configuration was saved" in report["problems"][0]
 
 
 @pytest.mark.parametrize(
