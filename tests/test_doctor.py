@@ -123,6 +123,7 @@ def test_fresh_two_workspace_home_with_bundled_jobs_passes_doctor(
     assert report.section("workspaces").status == "ok"
     assert report.section("jobs").details["jobs"] == [
         "default:enso-audit",
+        "default:enso-memory",
         "default:enso-update",
     ]
 

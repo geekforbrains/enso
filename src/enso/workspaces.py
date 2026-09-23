@@ -54,7 +54,7 @@ BUNDLED_SKILL_SUPPORT = {
     ),
     "enso-slack": ("references/rich-messages.md",),
 }
-BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-update")
+BUNDLED_JOBS: tuple[str, ...] = ("enso-audit", "enso-memory", "enso-update")
 BUNDLED_FILES: tuple[str, ...] = ()
 RESERVED_PREFIX = "enso-"
 

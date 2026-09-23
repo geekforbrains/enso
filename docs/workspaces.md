@@ -102,7 +102,7 @@ notifications. Bindings and notification destinations remain freely configurable
 no operator identity or special permission role is enforced. Provider permissions follow the
 same rules as every other workspace.
 
-Bundled maintenance jobs start here as `default:enso-audit` and `default:enso-update`.
+Bundled jobs start here as `default:enso-audit`, `default:enso-memory`, and `default:enso-update`.
 Their instructions, settings, and schedules remain editable. Workspace-scoped commands still
 require explicit or inherited context. [Update notifications](cli.md#updates) and
 [doctor notifications](cli.md#operating) fall back to `default` without it.

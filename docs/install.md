@@ -74,7 +74,7 @@ seeding files. Automatic migrations support 0.2.0 onward; older layouts are unsu
    Pairing binds your private chat to `default` and uses it for notifications; both remain
    configurable afterward. It does not grant wildcard access.
    Setup explains workspace context and channel audience trust before pairing.
-5. Writes `config.json`, seeds the `enso-audit` and `enso-update` jobs in `default`,
+5. Writes `config.json`, seeds the `enso-audit`, `enso-memory`, and `enso-update` jobs in `default`,
    sends a test message, and offers to install the background service.
 
 The connection acknowledgment and test message verify chat delivery, not provider login.

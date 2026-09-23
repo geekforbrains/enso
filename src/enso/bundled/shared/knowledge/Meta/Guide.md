@@ -12,7 +12,7 @@ a different destination; update retained workspace notes where they already live
 | --- | --- |
 | `!Inbox/` | Captures awaiting review or a clear destination |
 | `Meta/` | This guide, the collection index, and optional templates |
-| `Memory/` | Dated conversation logs, when requested or configured |
+| `Memory/` | Daily logs of notable chat events, written by the `enso-memory` job |
 | `People/` | People and useful relationship context |
 | `Projects/` | Finite efforts with a defined outcome |
 | `Areas/` | Ongoing responsibilities, operations, and standards |
@@ -56,10 +56,11 @@ found by folder or search instead; they should not be the only route to maintain
   at most one consecutive blank line outside code. Avoid trailing whitespace except two
   spaces for an intentional Markdown line break. Preserve meaningful imported layout.
 
-If conversation logs are wanted, use `Memory/YYYY-MM-DD.md` with sparse factual entries
-for decisions, corrections, commitments, and results. Establish the timezone with the user
-or configured writer. Distinguish requested work from completed work and omit credentials.
-This guide does not install or authorize an automated writer or maintenance job.
+The `enso-memory` job keeps `Memory/YYYY-MM-DD.md`: one bullet per notable chat decision,
+correction, commitment, or result, in the machine's local time, such as
+`- **03:17 PM**: One factual sentence.` Treat these logs as dated records. Correct a wrong
+entry in place, but keep maintained knowledge in its owning note. Disable the job in its
+`JOB.md` to stop the logs.
 
 ## Templates and maintenance
 

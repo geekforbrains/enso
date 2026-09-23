@@ -43,6 +43,8 @@ def test_seed_jobs_installs_commands_and_writes_once(enso_home: Paths) -> None:
         f"wrote {enso_home.workspace_jobs('default') / job / name}"
         for job, name in (
             ("enso-audit", "JOB.md"),
+            ("enso-memory", "JOB.md"),
+            ("enso-memory", "memory.py"),
             ("enso-update", "JOB.md"),
         )
     ]

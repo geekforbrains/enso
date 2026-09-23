@@ -263,10 +263,12 @@ Maintenance jobs start in the required [`default` operator workspace](workspaces
 alongside any other jobs with installation-wide responsibilities. Their settings and scripts
 remain yours to customize.
 
-`enso setup` and `enso config apply` install `enso-audit` and `enso-update` into
-`~/.enso/workspaces/default/jobs/` when their directories are missing. `enso init` prepares the home but does
-not install jobs. Both maintenance jobs run deterministic commands without an agent.
-Existing job directories are preserved.
+`enso setup` and `enso config apply` install `enso-audit`, `enso-memory`, and `enso-update`
+into `~/.enso/workspaces/default/jobs/` when their directories are missing; managed upgrades
+install a newly bundled job the same way. `enso init` prepares the home but does not install
+jobs. The two maintenance jobs run deterministic commands without an agent; `enso-memory`
+uses the installation's default agent, stamped into its `JOB.md` when installed. Existing
+job directories are preserved.
 
 ### Nightly health audit
 
@@ -316,6 +318,40 @@ chat's origin.
 The job never upgrades Enso. The operator asks in chat or runs `enso update apply` when
 ready. Disable it with `enabled: false` to stop nightly checks; manual `enso update check`
 still works. See [Upgrading](install.md#upgrading) and [CLI updates](cli.md#updates).
+
+### Chat memory
+
+`enso-memory` keeps a daily log of notable chat events in shared knowledge. It is an enabled
+agent job that runs at minute zero every hour with `catch_up: true`. Each entry is one
+sentence under the local time of the request or result, in `Memory/YYYY-MM-DD.md`:
+
+```markdown
+- **03:17 PM**: Moved the Apollo launch to Friday. ([[shared:Projects/Apollo launch|Apollo launch]])
+```
+
+Its gate, `python3 memory.py gate`, finds Slack and Telegram conversations through Enso's
+session bindings in every workspace and reads their completed turns from each provider's
+own history: Claude's `~/.claude/projects/` transcripts (or `$CLAUDE_CONFIG_DIR`) and Codex's
+local `codex app-server`. Sessions of other providers are skipped. Jobs, beats, and local
+CLI sessions are never read. A session is reread only after new activity; with no new turns
+the gate closes and no agent runs. The first run starts from local midnight that day and
+does not import older history. Enso stores no copy of the transcripts; the job depends on
+the provider keeping them.
+
+Each run gives the agent the oldest unreviewed turns, at most 60 and fewer when they are
+long, with that day's existing entries and a few related note paths. It returns entries as JSON and has no other task; most
+turns produce none. Its prompt treats everything quoted from chats as data. Postrun,
+`python3 memory.py postrun`, validates each entry against the batch and returns mistakes
+to the agent once, then writes the notes with `enso knowledge`. A note holding only entries
+stays in time order; other edits are kept and new entries follow them. A failed run keeps
+its batch for the next run, and an interrupted publication is replayed before new work.
+
+Review state lives in the job's `runtime/` directory. `python3 memory.py status`, run in the
+job directory, summarizes it. Deleting `runtime/` restarts the log from that day's midnight;
+entries already written stay, and the job skips an identical line but can reword a repeat.
+The scripts use only Python's standard library and need `python3` 3.9 or later on the
+service `PATH`. Change the agent, schedule, or prompt in `JOB.md`; set `enabled: false` to
+stop logging.
 
 ## Secrets
 

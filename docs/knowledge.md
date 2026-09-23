@@ -22,7 +22,8 @@ absent rather than risk recreating user-deleted notes.
 
 Homes without a guide keep their filing conventions and use the skill's formatting fallback.
 Adopting the starter in an existing collection requires an explicit editing task. Folders
-such as `Memory/` are ordinary knowledge; automation is configured separately.
+such as `Memory/` are ordinary knowledge. The bundled [`enso-memory`](jobs.md#chat-memory) job
+writes its daily logs there in every home, with or without the starter.
 
 ## Finding and maintaining knowledge
 

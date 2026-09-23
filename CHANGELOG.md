@@ -7,6 +7,11 @@ All notable changes to Enso are documented here, following
 
 ### Added
 
+- A bundled, enabled `enso-memory` job logs notable chat decisions, commitments,
+  corrections, and results hourly as timestamped bullets in shared `Memory/YYYY-MM-DD.md`.
+  It reads Slack and Telegram turns from Claude and Codex session history and runs with the
+  default agent only when there are new turns. Setup, config apply, and managed upgrades
+  install it in `default`; it starts from the day it first runs.
 - The web viewer edits home and workspace `AGENTS.md` on new **Instructions** tabs. A save
   never overwrites changes made on disk or by an agent after the page loaded.
 - Knowledge notes can be pinned from their page in the web viewer. Pinned notes lead the
@@ -16,6 +21,10 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- The bundled home `AGENTS.md` is shorter, grouped into persona, trust, knowledge, skills,
+  secrets, files, replies, and long-running work, and says where chat memory is kept.
+  Upgrades refresh only an untouched copy.
+- The starter guide describes the `enso-memory` log format for `Memory/`.
 - The web sidebar puts Knowledge second and groups Workspaces, Jobs, Skills, and Secrets under
   **Setup**, with Health at its foot. On phones, Knowledge joins the bottom bar and Runs moves
   to More. Skills has its own entry, the home has a page under Workspaces, and workspace pages
