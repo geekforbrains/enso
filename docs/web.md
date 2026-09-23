@@ -196,11 +196,13 @@ a job entirely.
 
 ### Knowledge
 
-`/knowledge` opens shared knowledge directly. **Pinned** notes lead, sorted by title, then
-**Recently updated** notes across all roots. Retained workspace roots follow under
-**Workspaces**. [Knowledge](knowledge.md) owns note format, links, writing, and imports.
+`/knowledge` opens shared knowledge directly. **Pinned** notes from every root lead, sorted
+by title, then **Recently updated** notes across all roots. Retained workspace roots follow
+under **Workspaces**. [Knowledge](knowledge.md) owns note format, links, writing, and imports.
 
-**Browse** shows immediate folders alphabetically, then notes in the current folder.
+**Browse** shows immediate folders alphabetically, then notes in the current folder. Away from
+Knowledge home, **Pinned** above a folder's contents lists only pins directly in that folder;
+pins in subfolders appear in their own folder. Search and **All notes** omit **Pinned**.
 **All notes** includes descendants; at Knowledge home it includes every root. Breadcrumbs
 move up. Notes, folder context, and backlinks sort by updated date, then path; unknown update
 dates use file modification time.

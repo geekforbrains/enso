@@ -92,6 +92,13 @@ def _recent_first(notes: Iterable[kb.Note]) -> list[kb.Note]:
     return sorted(sorted(notes, key=lambda note: note.path), key=_updated, reverse=True)
 
 
+def _directly_in(note: kb.Note, scope: str, prefix: str) -> bool:
+    """Whether a note sits in the folder ``prefix`` names, not in one of its subfolders."""
+    return (
+        note.scope == scope and note.path.startswith(prefix) and "/" not in note.path[len(prefix) :]
+    )
+
+
 def _pinned(catalog: kb.Catalog, ids: set[str]) -> list[kb.Note]:
     """Pins that still name exactly one note, by title; deleted or duplicated ids stay hidden."""
     notes = []
@@ -302,9 +309,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
             folders = _matching_folders(notes, "" if across else prefix, needle)
         notes = _search_notes(notes, search)
     elif view == "browse":
-        notes = [
-            note for note in notes if note.scope == listed and "/" not in note.path[len(prefix) :]
-        ]
+        notes = [note for note in notes if _directly_in(note, listed, prefix)]
         folders = _folder_rows(catalog, listed, folder)
     entries: list[dict[str, Any] | kb.Note] = [
         *folders,
@@ -326,7 +331,14 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "across": "1" if across else "",
     }
     recent = _recent_first(catalog.notes)[: web.knowledge.recent_limit] if home else []
-    pins, pins_error = common.attempt(partial(db.pinned_notes, paths)) if home else (None, None)
+    # The home gathers every pin; a folder shows only the pins directly inside it.
+    browsing = view == "browse" and not search
+    pins, pins_error = common.attempt(partial(db.pinned_notes, paths)) if browsing else (None, None)
+    pinned = [
+        note
+        for note in _pinned(catalog, pins or set())
+        if home or _directly_in(note, listed, prefix)
+    ]
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -341,7 +353,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "view": view,
         "rows": shown,
         "recent": [_note_row(note, catalog=catalog) for note in recent],
-        "pinned": [_note_row(note, catalog=catalog) for note in _pinned(catalog, pins or set())],
+        "pinned": [_note_row(note, catalog=catalog) for note in pinned],
         "pins_error": pins_error,
         "workspaces": _workspace_rows(catalog) if home else [],
         "total": total,
@@ -549,9 +561,7 @@ def note_model(
     siblings.extend(
         _note_row(other, catalog=catalog)
         for other in _recent_first(catalog.notes)
-        if other.scope == note.scope
-        and other.path.startswith(prefix)
-        and "/" not in other.path[len(prefix) :]
+        if _directly_in(other, note.scope, prefix)
     )
     linked = _recent_first(other for other in catalog.backlinks(note) if other != note)
     _config, problems = common.read_config(paths)

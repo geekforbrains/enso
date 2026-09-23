@@ -359,6 +359,10 @@ async def test_knowledge_pin_from_the_note_leads_the_home(
     await page.screenshot(
         path=str(tmp_path / f"pin-home-{width}-js-{javascript}.png"), full_page=True
     )
+    await page.goto(viewer + "knowledge?scope=shared")  # the note's own folder
+    await expect(pinned.locator(".title")).to_have_text(["Pricing review"])
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.goto(viewer + "knowledge")
 
     await pinned.get_by_role("link").click()
     await page.get_by_role("button", name="Unpin Pricing review", exact=True).click()

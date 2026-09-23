@@ -475,11 +475,7 @@ async def test_pinned_notes_lead_the_home_and_toggle_from_the_note(client, enso_
     html = await (await client.get("/knowledge")).text()
     assert section_titles(html, "pinned-head") == ["alpha", "Zebra"]
     assert html.index('id="pinned-head"') < html.index('id="recent-head"')
-    for other in (
-        "/knowledge?view=all",
-        "/knowledge?q=alpha",
-        "/knowledge?scope=shared&folder=Areas",
-    ):
+    for other in ("/knowledge?view=all", "/knowledge?q=alpha"):
         assert "pinned-head" not in await (await client.get(other)).text(), other
 
     fields, button = await pin_form(client, f"/knowledge/notes/{zebra}?raw=1")
@@ -497,6 +493,34 @@ async def test_pinned_notes_lead_the_home_and_toggle_from_the_note(client, enso_
     (root / "Moved alpha.md").unlink()
     assert "pinned-head" not in await (await client.get("/knowledge")).text()
     assert await pin_form(client, "/knowledge/file?scope=shared&path=Legacy.md") == (None, None)
+
+
+async def test_a_folder_shows_only_the_pins_directly_inside_it(client, enso_home):
+    root = enso_home.knowledge
+    pinned = [note(root, path)[1] for path in ("Top.md", "Areas/alpha.md", "Areas/Deep/deep.md")]
+    pinned.append(note(enso_home.workspace("team") / "knowledge", "Areas/Work.md")[1])
+    note(root, "Other/Plain.md")
+    for identity in pinned:
+        db.set_pinned(enso_home, identity, True)
+
+    home = await (await client.get("/knowledge")).text()
+    assert section_titles(home, "pinned-head") == ["alpha", "deep", "Top", "Work"]
+    for query, titles in (
+        ({"scope": "shared"}, ["Top"]),
+        ({"scope": "shared", "folder": "Areas"}, ["alpha"]),
+        ({"scope": "shared", "folder": "Areas/Deep"}, ["deep"]),
+        ({"scope": "workspace:team", "folder": "Areas"}, ["Work"]),
+    ):
+        html = await (await client.get("/knowledge?" + urlencode(query))).text()
+        assert section_titles(html, "pinned-head") == titles, query
+        assert html.index('id="pinned-head"') < html.index('class="range"'), query
+    for query in (
+        {"scope": "shared", "folder": "Other"},
+        {"scope": "shared", "folder": "Areas", "view": "all"},
+        {"scope": "shared", "folder": "Areas", "q": "alpha"},
+    ):
+        html = await (await client.get("/knowledge?" + urlencode(query))).text()
+        assert "pinned-head" not in html, query
 
 
 async def test_pin_requests_are_validated_before_any_write(client, enso_home):
