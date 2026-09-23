@@ -84,9 +84,10 @@ bundle belongs to [Releases](releasing.md).
 ### Browser checks
 
 The small Playwright suite exercises the real viewer on loopback with disposable homes,
-synthetic notes and secrets, and temporary browser profiles. It covers form success/errors,
-filter counts, keyboard/native confirmation, desktop and 320px layouts, search navigation,
-filesystem refresh, and the no-JavaScript fallback. Browser dependencies are optional and
+synthetic notes, secrets, and instructions, and temporary browser profiles. It covers form
+success/errors, instruction saves and edit conflicts, unsaved-change warnings, filter counts,
+keyboard/native confirmation, desktop and 320px layouts, search navigation, filesystem
+refresh, and the no-JavaScript fallback. Browser dependencies are optional and
 are not installed with Enso:
 
 ```bash

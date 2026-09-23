@@ -541,9 +541,9 @@ enso web stop|status
 enso web install|uninstall
 ```
 
-The browsing routes are read-only, but the Secrets section creates and deletes encrypted
-secrets. The viewer has no authentication, so keep it on localhost or behind authenticated
-private access; see [Web viewer](web.md#access). It is a separate process from `serve`.
+The viewer browses Enso and edits instructions and secrets. It has no authentication, so keep
+it on localhost or a private network such as Tailscale; see [Web viewer](web.md#access). It is a
+separate process from `serve`.
 Without its user service, `start` runs the viewer in the background
 (its output goes to `~/.enso/web.log`, its lock to `~/.enso/web.pid`), prints the URL
 once it answers, and exits 0 saying `already running` when the same viewer is live;

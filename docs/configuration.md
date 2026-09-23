@@ -509,8 +509,8 @@ defaults to 5 and is a non-negative integer; it limits the recently updated note
 Knowledge home. `web.knowledge.page_size` defaults to 50 and is a positive integer; it limits
 each page of Knowledge listings. When `config.json` is missing or invalid the viewer still
 starts, on `127.0.0.1:8787` unless flags say otherwise, because its Health page is where you
-read the problem. The web UI permits secret creation/deletion and has no authentication, so leave `host` at
-`127.0.0.1` unless something else is handling access. See [Web viewer](web.md).
+read the problem. The web UI edits instructions and secrets and has no authentication, so leave
+`host` at `127.0.0.1` unless something else is handling access. See [Web viewer](web.md).
 
 `web.hosts` lists the extra names a private tunnel or reverse proxy presents in the `Host`
 header, such as `["enso.example.ts.net"]`: host names only, without a scheme, port, or path.

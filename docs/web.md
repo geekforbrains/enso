@@ -64,9 +64,9 @@ lists, with descriptive first options such as `Any job`. Search grows to fill th
 `/` focuses it. In-place filters update the visible count. Server-filtered lists state
 their scope beside the count. Empty lists show one sentence.
 
-At 820px and below, navigation becomes **Today, Knowledge, Tasks, Heartbeats, More**. More contains
-the remaining views in the same groups, highlights its active destination, and carries the
-Health attention indicator. It uses native disclosure; JavaScript adds focus management,
+At 820px and below, navigation becomes **Today, Knowledge, Tasks, Heartbeats, More**. More
+contains the remaining views in the same groups, highlights its active destination, and carries
+the Health attention indicator. It uses native disclosure; JavaScript adds focus management,
 Escape, and outside click dismissal. Section tabs become segmented controls. Filters wrap,
 with equal-width selects above the search field. The layout respects phone safe areas and
 works at 320px.
@@ -164,7 +164,7 @@ input; secret fields always return empty. Verify action UI in a browser at deskt
 widths, with long names, keyboard focus, confirm/cancel, and JavaScript disabled. Request tests
 alone do not verify layout or interaction. See [Browser checks](development.md#browser-checks).
 
-## What it shows
+## Views
 
 ### Today
 
@@ -192,52 +192,6 @@ exceed that scan; [Runs](#runs) provides paginated history.
 that sample. Bars, counts, and average duration use the same sample; averages exclude absent
 or zero durations. The sample can include older runs, contain fewer than 30 per job, or omit
 a job entirely.
-
-### Tasks
-
-The [task board](tasks.md) at `/tasks` shows projects beside the board on desktop and above
-it on phones. Project entries show name, key, workspace, and unfinished count, including
-configured projects with no tasks. Tasks with missing project definitions remain reachable.
-**All tasks** clears the project selection. Workspace selection narrows projects and tasks
-and clears project/task filters.
-
-Selecting a project shows its current workflow, with ordered stages, `done`, stage counts,
-return destinations, and links to bound job instructions, including disabled jobs. Counts
-cover the whole project, including completed history, regardless of task search; unavailable
-counts are not shown as zero. Stage links filter the board. Project/stage links clear search,
-and project links also clear the stage filter. Recorded execution evidence belongs to tasks.
-
-| Group | Holds | Order |
-| --- | --- | --- |
-| Blocked | Human stages, blocked tasks, or attention flags | Oldest in stage first |
-| Active | Claimed tasks | Newest claim first |
-| Ready | Unclaimed tasks in executable stages | Project, then stage order |
-| Backlog | Tasks not yet ready for a stage job | Oldest in stage first |
-| Done | Finished and cancelled tasks | Newest first |
-
-Each task appears once; empty groups are omitted. Filters `workspace`, `project`, `stage`,
-and `q` (reference, title, body) apply before the 200-item completed-history cap. The count
-line reports all matching tasks, any display limit, and completions in the last seven days.
-Rows show reference, stage, origin, claim, current transaction phase, and time in stage.
-A selected project omits repeated origin details.
-
-At `/tasks/<ref>`, the task page shows its accepted stage, priority, claim, spec, refs,
-handoff, timeline, and latest transaction notice. Submission, checking, repair, acceptance,
-interruption, blocking, and operator overrides are distinct states. Submitting a handoff
-or passing one check does not advance the displayed stage.
-
-**Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
-versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,
-exit code, duration, attempt, and literal diagnostics; lifecycle events retain retry IDs.
-Missing evidence is never a pass, and provider success does not imply acceptance. Evidence
-survives provider-run pruning without broken links. Manual checks are labelled **Operator
-verification** and have no provider-run link.
-
-The worktree panel uses the recorded path, branch, target, starting revision, and cleanup
-status. A bounded Git query counts commits ahead of that target; unavailable counts say
-unknown. Cleanup failures show their diagnostics. Completed cleanup retains ownership
-history and omits the live count. Tasks without a worktree have no panel. All task operations
-remain in chat and the CLI.
 
 ### Knowledge
 
@@ -286,62 +240,51 @@ as binary files, never as active same-origin documents.
 Refresh discovers file changes and reuses unchanged parsed notes in memory. The viewer
 creates no persistent index or missing directories and never changes notes or metadata.
 
-### Workspaces
+### Tasks
 
-The list starts with **Home**, whose instructions, skills, and knowledge every workspace
-shares, then workspace rows with their [audit](workspaces.md) verdict. Each page shows a
-failing verdict in its heading and has these tabs:
+The [task board](tasks.md) at `/tasks` shows projects beside the board on desktop and above
+it on phones. Project entries show name, key, workspace, and unfinished count, including
+configured projects with no tasks. Tasks with missing project definitions remain reachable.
+**All tasks** clears the project selection. Workspace selection narrows projects and tasks
+and clears project/task filters.
 
-| Tab | Home `/home` | Workspace `/workspaces/<name>` |
+Selecting a project shows its current workflow, with ordered stages, `done`, stage counts,
+return destinations, and links to bound job instructions, including disabled jobs. Counts
+cover the whole project, including completed history, regardless of task search; unavailable
+counts are not shown as zero. Stage links filter the board. Project/stage links clear search,
+and project links also clear the stage filter. Recorded execution evidence belongs to tasks.
+
+| Group | Holds | Order |
 | --- | --- | --- |
-| Overview | Path, workspace count, shared knowledge and skills, home audit findings | Projects, workflow previews, unfinished counts, task links, bindings, jobs, uploads, and audit findings |
-| Instructions | `~/.enso/AGENTS.md` | The workspace's `AGENTS.md` |
-| Files | None | Content roots and the file browser |
+| Blocked | Human stages, blocked tasks, or attention flags | Oldest in stage first |
+| Active | Claimed tasks | Newest claim first |
+| Ready | Unclaimed tasks in executable stages | Project, then stage order |
+| Backlog | Tasks not yet ready for a stage job | Oldest in stage first |
+| Done | Finished and cancelled tasks | Newest first |
 
-The file browser supports `work/`, `uploads/`, and retained `knowledge/` and `drafts/` roots;
-absent optional roots are omitted. Knowledge cards open their scope in Knowledge. Workspace
-files include dotfiles. Readable text and Markdown render in place; binary, unreadable, or
-larger-than-2-MiB files show metadata. Markdown escapes raw HTML, leaves images as text, and
-keeps only relative, `http`, `https`, and `mailto` links.
+Each task appears once; empty groups are omitted. Filters `workspace`, `project`, `stage`,
+and `q` (reference, title, body) apply before the 200-item completed-history cap. The count
+line reports all matching tasks, any display limit, and completions in the last seven days.
+Rows show reference, stage, origin, claim, current transaction phase, and time in stage.
+A selected project omits repeated origin details.
 
-Workspaces and their parent container must be real directories. Browsing and summaries cannot
-escape the permitted roots, including through symlinks; rejected paths return 404.
+At `/tasks/<ref>`, the task page shows its accepted stage, priority, claim, spec, refs,
+handoff, timeline, and latest transaction notice. Submission, checking, repair, acceptance,
+interruption, blocking, and operator overrides are distinct states. Submitting a handoff
+or passing one check does not advance the displayed stage.
 
-### Instructions
+**Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
+versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,
+exit code, duration, attempt, and literal diagnostics; lifecycle events retain retry IDs.
+Missing evidence is never a pass, and provider success does not imply acceptance. Evidence
+survives provider-run pruning without broken links. Manual checks are labelled **Operator
+verification** and have no provider-run link.
 
-**Instructions** edits `AGENTS.md` in place; [Customizing](customizing.md#instructions-agentsmd)
-owns what belongs there. Saving replaces the whole file atomically, keeping its permissions
-and the `CLAUDE.md` link. A missing file is created on save with mode `0644`. Changes made on
-disk or by an agent after the page loaded are never silently overwritten; see
-[Forms and actions](#forms-and-actions). A symbolic-link, special, non-UTF-8, or
-larger-than-128-KiB file is shown as an error without a form. A save over 128 KiB keeps the text
-for trimming. Managed updates no longer refresh an edited home file; see
-[the home-level file](customizing.md#the-home-level-file).
-
-### Skills
-
-Skills has one row per skill, grouped by workspace (`enso / <name>`), then home (`enso`),
-then external `user` scope. Workspace groups are alphabetical. Rows show names and descriptions;
-headings provide scope. Workspace and status filters narrow the list. Search and status update
-the rendered page, counts, and empty headings without a reload; without JavaScript every row
-in the selected workspace remains visible.
-
-`/skills/<name>` shows every scope providing that name, making collisions visible together.
-Entries include path, description, status, and reached workspaces. User-scope entries are
-marked as outside Enso's management. [Customizing](customizing.md#skills) owns installation
-and scope rules.
-
-### Jobs
-
-Job rows show directory name, schedule, workspace, executor, recent outcomes, and next run
-or why it will not run. Facts align in equal columns on wide lists; fixed-width sparklines
-align their newest run at the right edge. Stage jobs without cron show `when work is ready`.
-
-**Overview** shows configuration, safely rendered prompt, gate/postrun commands and timeouts,
-follow-up limit, concurrency policy, recent outcomes, and validation problems. Stage jobs also
-show linked project/stage, project capacity, and required check names. Command and integration
-executors show their type instead of a model. Hook script contents are not displayed.
-**History** lists up to 500 job runs and links to paginated [Runs](#runs).
+The worktree panel uses the recorded path, branch, target, starting revision, and cleanup
+status. A bounded Git query counts commits ahead of that target; unavailable counts say
+unknown. Cleanup failures show their diagnostics. Completed cleanup retains ownership
+history and omits the live count. Tasks without a worktree have no panel. All task operations
+remain in chat and the CLI.
 
 ### Heartbeats
 
@@ -399,6 +342,80 @@ Timeouts use yellow and errors coral; both count as failures. Final duration inc
 waiting and hooks, while execution timeout does not. [Jobs](jobs.md#postrun-scripts) owns
 execution and postrun rules.
 
+### Workspaces
+
+The list starts with **Home**, whose instructions, skills, and knowledge every workspace
+shares, then workspace rows with their [audit](workspaces.md) verdict. Each page shows a
+failing verdict in its heading and has these tabs:
+
+| Tab | Home `/home` | Workspace `/workspaces/<name>` |
+| --- | --- | --- |
+| Overview | Path, workspace count, links to shared knowledge and skills, audit findings | Projects with workflow previews and unfinished counts, bindings, jobs, uploads, audit findings |
+| Instructions | `~/.enso/AGENTS.md` | The workspace's `AGENTS.md` |
+| Files | None | Content roots and the file browser |
+
+The file browser supports `work/`, `uploads/`, and retained `knowledge/` and `drafts/` roots;
+absent optional roots are omitted. Knowledge cards open their scope in Knowledge. Workspace
+files include dotfiles. Readable text and Markdown render in place; binary, unreadable, or
+larger-than-2-MiB files show metadata. Markdown escapes raw HTML, leaves images as text, and
+keeps only relative, `http`, `https`, and `mailto` links.
+
+Workspaces and their parent container must be real directories. Browsing and summaries cannot
+escape the permitted roots, including through symlinks; rejected paths return 404.
+
+### Instructions
+
+**Instructions** edits the home's or a workspace's `AGENTS.md` in place;
+[Customizing](customizing.md#instructions-agentsmd) owns what belongs there. Saving replaces
+the whole file atomically, keeping its permissions and the `CLAUDE.md` link. A missing file is
+created on save with mode `0644`. Changes made on disk or by an agent after the page loaded are
+never silently overwritten; see [Forms and actions](#forms-and-actions). A symbolic-link,
+special, non-UTF-8, or larger-than-128-KiB file is shown as an error without a form. A save over
+128 KiB keeps the text for trimming. Managed updates no longer refresh an edited home file; see
+[the home-level file](customizing.md#the-home-level-file).
+
+### Jobs
+
+Job rows show directory name, schedule, workspace, executor, recent outcomes, and next run
+or why it will not run. Facts align in equal columns on wide lists; fixed-width sparklines
+align their newest run at the right edge. Stage jobs without cron show `when work is ready`.
+
+**Overview** shows configuration, safely rendered prompt, gate/postrun commands and timeouts,
+follow-up limit, concurrency policy, recent outcomes, and validation problems. Stage jobs also
+show linked project/stage, project capacity, and required check names. Command and integration
+executors show their type instead of a model. Hook script contents are not displayed.
+**History** lists up to 500 job runs and links to paginated [Runs](#runs).
+
+### Skills
+
+Skills has one row per skill, grouped by workspace (`enso / <name>`), then home (`enso`),
+then external `user` scope. Workspace groups are alphabetical. Rows show names and descriptions;
+headings provide scope. Workspace and status filters narrow the list. Search and status update
+the rendered page, counts, and empty headings without a reload; without JavaScript every row
+in the selected workspace remains visible.
+
+`/skills/<name>` shows every scope providing that name, making collisions visible together.
+Entries include path, description, status, and reached workspaces. User-scope entries are
+marked as outside Enso's management. [Customizing](customizing.md#skills) owns installation
+and scope rules.
+
+### Secrets
+
+`/secrets` opens **Add secret**. **Secrets** at `/secrets?view=saved` lists saved names and
+delete controls; its tab shows the total from either view. An instant case-insensitive name
+filter shows matching counts; `/` focuses it. Without JavaScript all names remain visible.
+
+Multiline values are normalized to LF. Use `enso secret add NAME --stdin` for exact bytes.
+Saved values never appear in responses and cannot be revealed or edited. Duplicate creation
+fails; replacement requires deleting the name and adding it again. Deletion uses native
+confirmation, or an inline Delete/Cancel disclosure without JavaScript.
+
+Creation redirects to an empty Add secret form; deletion and Cancel return to the saved list.
+Success shows **Secret added.** or **Secret deleted.** Errors stay in the relevant tab; the add
+form retains the name but clears the value. Both actions use the [CLI](cli.md#secrets)'s store
+and first-use key creation, without requiring the chat service.
+[Configuration](configuration.md#secrets) owns key backup and restore.
+
 ### Health
 
 Health shows [`enso doctor`](cli.md)'s configuration, home/workspace, provider, transport,
@@ -411,30 +428,19 @@ It also shows the database footprint and schema readability, viewer version, hom
 address, and capabilities. **Log** at `/health/log` shows the last 200 lines of `enso.log`.
 Health remains available with invalid or missing configuration.
 
-## Secrets
-
-`/secrets` opens **Add secret**. **Secrets** at `/secrets?view=saved` lists saved names and
-delete controls; its tab shows the total from either view. An instant case-insensitive name
-filter shows matching counts; `/` focuses it. Without JavaScript all names remain visible.
-
-Multiline values are normalized to LF. Use `enso secret add NAME --stdin` for exact bytes.
-Saved values never appear in responses and cannot be revealed or edited. Duplicate creation
-fails; replacement requires deleting the name and adding it again. Deletion uses native
-confirmation, or an inline Delete/Cancel disclosure without JavaScript.
-
-Secrets change only through `POST /secrets` and `POST /secrets/{name}/delete`. Creation
-redirects to an empty Add secret form; deletion and Cancel return to the saved list. Success
-shows **Secret added.** or **Secret deleted.** Errors stay in the relevant tab; the add form
-retains the name but clears the value. Both actions use the [CLI](cli.md#secrets)'s store and
-first-use key creation, without requiring the chat service.
-[Configuration](configuration.md#secrets) owns key backup and restore.
-
 ## Access
 
 The viewer binds `127.0.0.1` by default. It accepts `localhost`, address literals, its bind
 host, and configured [`web.hosts`](configuration.md#web); other Host headers receive 421.
-Routes declare their methods: missing routes return 404, unsupported methods 405, and browsing
-uses GET only.
+Routes declare their methods: missing routes return 404 and unsupported methods 405. Browsing
+uses GET. The only writes are form POSTs:
+
+| Route | Writes |
+| --- | --- |
+| `POST /home/instructions` | The home's `AGENTS.md` |
+| `POST /workspaces/<name>/instructions` | A workspace's `AGENTS.md` |
+| `POST /secrets` | A new secret |
+| `POST /secrets/<name>/delete` | Deletes a secret |
 
 Writes require a same-origin URL-encoded form with an unguessable token. Cross-site requests
 and mismatched Origin/Host are rejected. Safari's opaque Origin also requires its same-origin
@@ -445,7 +451,7 @@ Every response carries security headers and a Content Security Policy restricted
 viewer's own assets and safely served images. Pages and form responses use
 `Cache-Control: no-store`; submitted secret values never appear in errors.
 
-For phone access, use a private tunnel or authenticating reverse proxy and leave Enso on
-localhost. Preserve the public Host header, add its name to `web.hosts`, and restart the
-viewer. Binding elsewhere with `--host` does not add authentication. Write protection is
-not a login system.
+For phone access, use a private network such as Tailscale, or an authenticating reverse
+proxy, and leave Enso on localhost. Preserve the public Host header, add its name to
+`web.hosts`, and restart the viewer. Binding elsewhere with `--host` does not add
+authentication. Write protection is not a login system.

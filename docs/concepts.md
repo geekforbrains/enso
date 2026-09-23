@@ -282,5 +282,5 @@ exit alone does not prove that a stage passed.
 ## What Enso is not
 
 Enso is not a security sandbox or a general web control panel. The viewer browses knowledge
-and operational state; Secrets is its write interface. Author notes and operate tasks through
-chat and the CLI.
+and operational state and edits instructions and secrets. Author notes and operate tasks
+through chat and the CLI.
