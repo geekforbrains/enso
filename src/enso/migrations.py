@@ -275,6 +275,24 @@ def add_secret_store(paths: Paths) -> None:
         connection.execute("PRAGMA user_version = 3")
 
 
+def add_knowledge_pins(paths: Paths) -> None:
+    """Add the viewer's pinned-note table; existing rows and user tables are untouched."""
+    if not paths.db.exists():
+        return
+    with closing(sqlite3.connect(paths.db)) as connection, connection:
+        connection.execute("BEGIN IMMEDIATE")
+        application = connection.execute("PRAGMA application_id").fetchone()[0]
+        revision = connection.execute("PRAGMA user_version").fetchone()[0]
+        if application != 0x454E534F or revision not in (4, 5):
+            raise UpdateError("expected an Enso database at schema 4 or 5")
+        if revision == 5:
+            return
+        connection.execute(
+            "CREATE TABLE _enso_knowledge_pins (note_id TEXT PRIMARY KEY, pinned_at TEXT NOT NULL)"
+        )
+        connection.execute("PRAGMA user_version = 5")
+
+
 # 0.2.0 is revision zero. Keep every later step so installations may skip releases.
 # Lock files hold nothing to restore, so the first step declares no snapshot paths.
 MIGRATIONS: tuple[Migration, ...] = (
@@ -297,6 +315,7 @@ MIGRATIONS: tuple[Migration, ...] = (
         workspace_settings_paths,
         migrate_workspace_settings,
     ),
+    Migration(8, "add pinned knowledge notes", lambda paths: ("enso.db",), add_knowledge_pins),
 )
 
 

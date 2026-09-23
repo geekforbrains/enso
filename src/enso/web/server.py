@@ -455,6 +455,26 @@ async def knowledge_asset(request: web.Request) -> web.StreamResponse:
     return web.Response(body=body, content_type=content_type, headers=headers)
 
 
+async def knowledge_pin(request: web.Request) -> web.StreamResponse:
+    """Pin or unpin a note by its stable id, then return to the view that asked."""
+    paths = request.app[PATHS]
+    form = await request.post()
+    keys = set(form)
+    if (
+        not {"_csrf", "id", "pinned"} <= keys <= {"_csrf", "id", "pinned", "raw"}
+        or any(len(form.getall(k)) != 1 for k in form)
+        or not isinstance(note_id := form["id"], str)
+        or form["pinned"] not in ("0", "1")
+        or form.get("raw", "1") != "1"
+    ):
+        raise web.HTTPBadRequest(reason="Expected one note id and pin state")
+    pinned = form["pinned"] == "1"
+    href = await _write_model(paths, lambda: knowledge.set_pinned(paths, note_id, pinned))
+    if href is None:
+        return not_found(request, "No unique knowledge note has this id.")
+    raise web.HTTPSeeOther(href + ("?raw=1" if "raw" in form else ""))
+
+
 async def skills(request: web.Request) -> web.StreamResponse:
     paths = request.app[PATHS]
     selected = request.query.get("workspace") or None
@@ -628,6 +648,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/knowledge/notes/{id}", knowledge_note),
     ("GET", "/knowledge/file", knowledge_note),
     ("GET", "/knowledge/asset", knowledge_asset),
+    ("POST", "/knowledge/pins", knowledge_pin),
     ("GET", "/skills", skills),
     ("GET", "/skills/{name}", skill),
     ("GET", "/jobs", jobs),

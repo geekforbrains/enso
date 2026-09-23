@@ -17,8 +17,15 @@
   {{ m.filter_button('Search', hide=False) }}
   {% if q %}<a href="{{ clear_url }}">Clear</a>{% endif %}
 </form>
+{{ m.error(pins_error, "Pinned notes could not be read") }}
+{% if pinned %}
+<section class="knowledge-shortcuts" aria-labelledby="pinned-head">
+  <div class="shead"><h2 id="pinned-head">Pinned</h2></div>
+  {{ k.row_list(pinned) }}
+</section>
+{% endif %}
 {% if recent %}
-<section class="knowledge-recent" aria-labelledby="recent-head">
+<section class="knowledge-shortcuts" aria-labelledby="recent-head">
   <div class="shead"><h2 id="recent-head">Recently updated</h2></div>
   {{ k.row_list(recent) }}
 </section>

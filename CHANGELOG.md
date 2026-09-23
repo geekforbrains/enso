@@ -9,6 +9,9 @@ All notable changes to Enso are documented here, following
 
 - The web viewer edits home and workspace `AGENTS.md` on new **Instructions** tabs. A save
   never overwrites changes made on disk or by an agent after the page loaded.
+- Knowledge notes can be pinned from their page in the web viewer. Pinned notes lead the
+  Knowledge home, above **Recently updated**, and stay pinned when a note moves. Pins live in
+  `enso.db`, so updating an existing home runs home migration 8 (database schema 5).
 
 ### Changed
 

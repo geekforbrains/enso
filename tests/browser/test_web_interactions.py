@@ -321,6 +321,55 @@ async def test_knowledge_folder_choice_survives_navigation_and_reload(browser, v
 
 
 @pytest.mark.parametrize("width", [1280, 320])
+@pytest.mark.parametrize("javascript", [True, False])
+async def test_knowledge_pin_from_the_note_leads_the_home(
+    browser, viewer, enso_home, table_notes, width, javascript, tmp_path
+):
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900},
+        java_script_enabled=javascript,
+        color_scheme="dark" if width == 320 else "light",
+        reduced_motion="reduce",
+    )
+    page = await context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    await page.goto(viewer + table_notes)
+    properties = page.locator(".knowledge-properties")
+    height = (await properties.bounding_box())["height"]
+    pin = page.get_by_role("button", name="Pin Pricing review", exact=True)
+    assert (await pin.bounding_box())["height"] >= 44
+    await pin.focus()
+    await pin.press("Enter")
+    unpin = page.get_by_role("button", name="Unpin Pricing review", exact=True)
+    await expect(unpin).to_be_visible()
+    assert page.url == viewer + table_notes
+    assert await unpin.locator("svg").evaluate("icon => getComputedStyle(icon).fill") != "none"
+    # The larger target overlaps the line's padding rather than making it taller.
+    assert (await properties.bounding_box())["height"] == height
+    assert db.pinned_notes(enso_home) == {table_notes.rsplit("/", 1)[1]}
+    await page.screenshot(path=str(tmp_path / f"pin-note-{width}-js-{javascript}.png"))
+
+    await page.goto(viewer + "knowledge")
+    pinned = page.get_by_role("region", name="Pinned", exact=True)
+    recent = page.get_by_role("region", name="Recently updated", exact=True)
+    await expect(pinned.locator(".title")).to_have_text(["Pricing review"])
+    assert (await pinned.bounding_box())["y"] < (await recent.bounding_box())["y"]
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(
+        path=str(tmp_path / f"pin-home-{width}-js-{javascript}.png"), full_page=True
+    )
+
+    await pinned.get_by_role("link").click()
+    await page.get_by_role("button", name="Unpin Pricing review", exact=True).click()
+    await expect(pin).to_be_visible()
+    await page.goto(viewer + "knowledge")
+    await expect(pinned).to_have_count(0)
+    assert not errors
+    await context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 320])
 async def test_workspace_markdown_tables_scroll_without_page_overflow(
     browser, viewer, table_notes, width, tmp_path
 ):

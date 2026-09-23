@@ -19,6 +19,7 @@ from enso import (
     runs,
     update_snapshot,
 )
+from enso.config import Paths
 from enso.maintenance import UpdateError, write_json
 
 
@@ -445,7 +446,10 @@ def old_job_database(paths):
     """Use schema 3's real nonnullable history shape, not a current table with an old marker."""
     db.initialize(paths)
     with sqlite3.connect(paths.db) as connection:
-        connection.executescript("DROP TABLE runs; DROP TABLE _enso_job_waiters;" + OLD_RUNS)
+        connection.executescript(
+            "DROP TABLE runs; DROP TABLE _enso_job_waiters; DROP TABLE _enso_knowledge_pins;"
+            + OLD_RUNS
+        )
         connection.execute("PRAGMA user_version = 3")
 
 
@@ -747,6 +751,8 @@ def test_job_migration_rebuilds_history_without_losing_attempts_or_user_objects(
                 (str(number),),
             )
     migrations.MIGRATIONS[4].apply(enso_home)
+    migrations.MIGRATIONS[4].apply(enso_home)  # a retry recognizes the completed schema
+    migrations.add_knowledge_pins(enso_home)  # the later schema the readers below require
     with db.reader(enso_home) as connection:
         assert [
             tuple(row)
@@ -773,7 +779,6 @@ def test_job_migration_rebuilds_history_without_losing_attempts_or_user_objects(
             connection.execute("SELECT value FROM user_history ORDER BY rowid DESC").fetchone()[0]
             == "0"
         )
-    migrations.MIGRATIONS[4].apply(enso_home)
 
 
 @pytest.mark.parametrize("conflict", ["duplicate", "mixed", "symlink", "oversized"])
@@ -1180,3 +1185,63 @@ def test_fresh_home_at_revision_six_seeds_command_audit_without_historical_scrip
     assert frontmatter.read(job / "JOB.md").fields["command"] == audit_job_migration._COMMAND
     assert not (job / "prerun.sh").exists()
     assert migrations.pending(paths) == ()
+
+
+def schema_four_database(paths):
+    """Schema 4 is the current schema without the pins table."""
+    db.initialize(paths)
+    with sqlite3.connect(paths.db) as connection:
+        connection.executescript(
+            "DROP TABLE _enso_knowledge_pins;"
+            "CREATE TABLE user_data (value TEXT); INSERT INTO user_data VALUES ('keep this');"
+            "INSERT INTO _enso_secrets VALUES ('TOKEN', x'00');"
+        )
+        connection.execute("PRAGMA user_version = 4")
+
+
+def test_knowledge_pins_upgrade_matches_a_fresh_database_and_keeps_data(enso_home, tmp_path):
+    schema_four_database(enso_home)
+    write_json(enso_home.home / migrations.MARKER, {"revision": 7})
+    assert migrations.plan(enso_home) == ("enso.db",)
+
+    migrations.apply(enso_home)
+    migrations.apply(enso_home)
+    migrations.MIGRATIONS[7].apply(enso_home)  # a retry recognizes the completed schema
+
+    assert migrations.read_revision(enso_home) == 8 == migrations.latest_revision()
+    fresh = Paths(tmp_path / "fresh")
+    db.initialize(fresh)
+    query = "SELECT sql FROM sqlite_master WHERE name = '_enso_knowledge_pins'"
+    with db.reader(enso_home) as upgraded, db.reader(fresh) as new:
+        assert upgraded.execute(query).fetchone()[0] == new.execute(query).fetchone()[0]
+        assert upgraded.execute("SELECT value FROM user_data").fetchone()[0] == "keep this"
+        assert upgraded.execute("SELECT name FROM _enso_secrets").fetchone()[0] == "TOKEN"
+    db.set_pinned(enso_home, "3d6d560a-21ef-49fa-a4db-7640b8dcab89", True)
+    assert db.pinned_notes(enso_home) == {"3d6d560a-21ef-49fa-a4db-7640b8dcab89"}
+
+
+def test_knowledge_pins_step_refuses_other_schemas_and_skips_a_missing_database(enso_home):
+    step = migrations.MIGRATIONS[7]
+    step.apply(enso_home)
+    assert not enso_home.db.exists()
+    old_job_database(enso_home)  # schema 3 still needs revision 5 first
+    with pytest.raises(UpdateError, match="schema 4 or 5"):
+        step.apply(enso_home)
+    with sqlite3.connect(enso_home.db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 3
+
+
+def test_knowledge_pins_snapshot_restores_schema_four(enso_home, tmp_path):
+    schema_four_database(enso_home)
+    operation = tmp_path / "operation"
+    operation.mkdir()
+    step = migrations.MIGRATIONS[7]
+    names = update_snapshot.plan(enso_home, [*step.paths(enso_home), "enso.db-wal", "enso.db-shm"])
+    update_snapshot.capture(enso_home, operation, names)
+    step.apply(enso_home)
+    update_snapshot.restore(enso_home, operation)
+    with sqlite3.connect(enso_home.db) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone()[0] == 4
+        tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
+        assert "_enso_knowledge_pins" not in tables and "user_data" in tables
+    step.apply(enso_home)

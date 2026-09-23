@@ -1,7 +1,8 @@
-"""Read-only knowledge page models and safe, scope-aware Markdown presentation.
+"""Knowledge page models, pins, and safe, scope-aware Markdown presentation.
 
 Catalog discovery and link identity belong to ``enso.knowledge``. This module translates
 that shared model into bounded folder/search pages, ordinary browser links and local assets.
+It never writes notes: pins are the viewer's own records in ``enso.db``, keyed by note id.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import re
 from collections.abc import Iterable, Mapping
 from datetime import UTC, datetime
 from difflib import get_close_matches
+from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 from urllib.parse import quote, urlencode, urlsplit
@@ -20,6 +22,7 @@ from markdown_it.rules_inline import StateInline
 from markdown_it.token import Token
 from markupsafe import Markup, escape
 
+from .. import db
 from .. import knowledge as kb
 from ..config import Paths, WebConfig
 from . import common, files, filters
@@ -87,6 +90,31 @@ def _stamp(value: Any) -> datetime | None:
 def _recent_first(notes: Iterable[kb.Note]) -> list[kb.Note]:
     """Browse lists and equally relevant search results use recency, then path."""
     return sorted(sorted(notes, key=lambda note: note.path), key=_updated, reverse=True)
+
+
+def _pinned(catalog: kb.Catalog, ids: set[str]) -> list[kb.Note]:
+    """Pins that still name exactly one note, by title; deleted or duplicated ids stay hidden."""
+    notes = []
+    for note_id in ids:
+        try:
+            note = catalog.by_id(note_id)
+        except kb.KnowledgeError:
+            continue
+        if note is not None:
+            notes.append(note)
+    return sorted(notes, key=lambda note: (note.title.casefold(), note.root.label, note.path))
+
+
+def set_pinned(paths: Paths, note_id: str, pinned: bool) -> str | None:
+    """Pin or unpin a note with a unique id, returning its page; any other id is absent."""
+    try:
+        note = kb.scan(paths).by_id(note_id)
+    except kb.KnowledgeError:
+        return None
+    if note is None or note.id is None:
+        return None
+    db.set_pinned(paths, note.id, pinned)
+    return note_url(note)
 
 
 def _search_notes(notes: list[kb.Note], query: str) -> list[kb.Note]:
@@ -298,6 +326,7 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "across": "1" if across else "",
     }
     recent = _recent_first(catalog.notes)[: web.knowledge.recent_limit] if home else []
+    pins, pins_error = common.attempt(partial(db.pinned_notes, paths)) if home else (None, None)
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -312,6 +341,8 @@ def listing_model(paths: Paths, query: Mapping[str, str]) -> dict[str, Any] | No
         "view": view,
         "rows": shown,
         "recent": [_note_row(note, catalog=catalog) for note in recent],
+        "pinned": [_note_row(note, catalog=catalog) for note in _pinned(catalog, pins or set())],
+        "pins_error": pins_error,
         "workspaces": _workspace_rows(catalog) if home else [],
         "total": total,
         "page": page,
@@ -538,6 +569,11 @@ def note_model(
     note_problems = note.problems
     if note.id and href.startswith("/knowledge/file?"):
         note_problems += ("Duplicate note id; repair metadata to restore a stable URL.",)
+    # Only a stable identity can be pinned. An unreadable store omits the control; the
+    # Knowledge home reports the error.
+    pins = None
+    if href.startswith("/knowledge/notes/"):
+        pins, _error = common.attempt(partial(db.pinned_notes, paths))
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -546,6 +582,7 @@ def note_model(
         "source": source,
         "raw": raw,
         "note_url": href,
+        "pinned": note.id in pins if pins is not None else None,
         "note_problems": note_problems,
         "raw_url": href + ("&" if "?" in href else "?") + "raw=1",
         "folder_url": folder_url(note.scope, folder),

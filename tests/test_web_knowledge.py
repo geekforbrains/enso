@@ -12,6 +12,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from conftest import write_config
 from test_web_navigation import Document
 
+from enso import db
 from enso import knowledge as kb
 from enso.config import Paths
 from enso.web import knowledge, server
@@ -424,3 +425,122 @@ async def test_duplicate_id_is_not_arbitrarily_resolved(client, enso_home):
     assert len(links) == 2 and all(link.startswith("/knowledge/file?") for link in links)
     response = await client.get(links[0])
     assert response.status == 200 and "Duplicate note id" in await response.text()
+
+
+async def pin_form(client, url: str):
+    """The note page's pin form fields, as a browser would submit them, or None."""
+    page = Document(await (await client.get(url)).text()).root
+    forms = page.find("form", "knowledge-pin")
+    if not forms:
+        return None, None
+    (form,) = forms
+    (button,) = form.find("button")
+    return {field.attrs["name"]: field.attrs["value"] for field in form.find("input")}, button
+
+
+def section_titles(html: str, heading: str) -> list[str]:
+    (section,) = [
+        node
+        for node in Document(html).root.find("section")
+        if node.attrs.get("aria-labelledby") == heading
+    ]
+    return [row.find("span", "title")[0].text for row in section.find("a", "knowledge-row")]
+
+
+async def test_pinned_notes_lead_the_home_and_toggle_from_the_note(client, enso_home):
+    root = enso_home.knowledge
+    _, zebra = note(root, "Zebra.md")
+    _, alpha = note(root, "Areas/alpha.md")
+    note(root, "Areas/Unpinned.md")
+    (root / "Legacy.md").write_text("A note without managed metadata.\n")
+    home = await client.get("/knowledge")
+    assert "pinned-head" not in await home.text() and not enso_home.db.exists()
+
+    for identity in (zebra, alpha):
+        fields, button = await pin_form(client, f"/knowledge/notes/{identity}")
+        assert fields["pinned"] == "1" and "raw" not in fields
+        assert (
+            button.attrs["aria-label"].startswith("Pin ")
+            and "is-pinned" not in button.attrs["class"]
+        )
+        response = await client.post("/knowledge/pins", data=fields, allow_redirects=False)
+        assert response.status == 303
+        assert response.headers["Location"] == f"/knowledge/notes/{identity}"
+        # Repeating a submitted state, such as a double click, is harmless.
+        assert (
+            await client.post("/knowledge/pins", data=fields, allow_redirects=False)
+        ).status == 303
+    assert db.pinned_notes(enso_home) == {zebra, alpha}
+
+    html = await (await client.get("/knowledge")).text()
+    assert section_titles(html, "pinned-head") == ["alpha", "Zebra"]
+    assert html.index('id="pinned-head"') < html.index('id="recent-head"')
+    for other in (
+        "/knowledge?view=all",
+        "/knowledge?q=alpha",
+        "/knowledge?scope=shared&folder=Areas",
+    ):
+        assert "pinned-head" not in await (await client.get(other)).text(), other
+
+    fields, button = await pin_form(client, f"/knowledge/notes/{zebra}?raw=1")
+    assert fields["pinned"] == "0" and fields["raw"] == "1"
+    assert button.attrs["aria-label"] == button.attrs["title"] == "Unpin Zebra"
+    assert "is-pinned" in button.attrs["class"]
+    response = await client.post("/knowledge/pins", data=fields, allow_redirects=False)
+    assert response.headers["Location"] == f"/knowledge/notes/{zebra}?raw=1"
+    assert db.pinned_notes(enso_home) == {alpha}
+
+    # A pin follows its note's identity through a move; deleted notes quietly drop out.
+    (root / "Areas/alpha.md").rename(root / "Moved alpha.md")
+    html = await (await client.get("/knowledge")).text()
+    assert section_titles(html, "pinned-head") == ["Moved alpha"]
+    (root / "Moved alpha.md").unlink()
+    assert "pinned-head" not in await (await client.get("/knowledge")).text()
+    assert await pin_form(client, "/knowledge/file?scope=shared&path=Legacy.md") == (None, None)
+
+
+async def test_pin_requests_are_validated_before_any_write(client, enso_home):
+    _, identity = note(enso_home.knowledge, "Pinned.md")
+    fields, _button = await pin_form(client, f"/knowledge/notes/{identity}")
+    for changed, status in (
+        ({"_csrf": "stale"}, 403),
+        ({"pinned": "yes"}, 400),
+        ({"raw": "0"}, 400),
+        ({"extra": "1"}, 400),
+        ({"id": str(uuid4())}, 404),
+        ({"id": "../Pinned.md"}, 404),
+    ):
+        response = await client.post("/knowledge/pins", data={**fields, **changed})
+        assert response.status == status, changed
+    missing = {key: value for key, value in fields.items() if key != "pinned"}
+    assert (await client.post("/knowledge/pins", data=missing)).status == 400
+    assert (await client.get("/knowledge/pins")).status == 405
+    assert not enso_home.db.exists()
+
+
+async def test_duplicate_ids_cannot_be_pinned_or_listed(client, enso_home):
+    identity = str(uuid4())
+    note(enso_home.knowledge, "One.md", identity=identity)
+    db.set_pinned(enso_home, identity, True)
+    note(enso_home.knowledge, "Two.md", identity=identity)
+    assert "pinned-head" not in await (await client.get("/knowledge")).text()
+    fields, _button = await pin_form(client, "/knowledge/file?scope=shared&path=One.md")
+    assert fields is None
+    response = await client.post(
+        "/knowledge/pins", data={"_csrf": client.app[server.CSRF], "id": identity, "pinned": "0"}
+    )
+    assert response.status == 404 and db.pinned_notes(enso_home) == {identity}
+
+
+async def test_unreadable_pins_are_reported_without_hiding_knowledge(client, enso_home):
+    _, identity = note(enso_home.knowledge, "Readable.md")
+    db.initialize(enso_home)
+    with db.transaction(enso_home) as con:
+        con.execute("PRAGMA user_version = 99")
+    response = await client.get("/knowledge")
+    html = await response.text()
+    assert response.status == 200 and "Readable" in html
+    (alert,) = Document(html).root.find("div", "error")
+    assert "Pinned notes could not be read" in alert.text
+    response = await client.get(f"/knowledge/notes/{identity}")
+    assert response.status == 200 and "knowledge-pin" not in await response.text()

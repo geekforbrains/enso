@@ -41,7 +41,7 @@ def test_convert_all_workspaces_preserving_settings_permissions_and_unrelated_fi
     inherited.mkdir()
     unrelated = source.with_name("AGENTS.md")
     unrelated.write_text("Preserve instructions exactly.\n")
-    assert set(migrations.plan(old_home)) == {
+    assert set(migrations.MIGRATIONS[6].paths(old_home)) == {
         "workspaces/default/WORKSPACE.md",
         "workspaces/default/workspace.json",
         "workspaces/unbound/WORKSPACE.md",
@@ -63,7 +63,7 @@ def test_convert_all_workspaces_preserving_settings_permissions_and_unrelated_fi
     assert resolve_agent(config, "default").provider == "codex"
     assert config.provider_args("default", "claude") == ()
     assert config.provider_args("default", "codex") == ("--name", "café\n001")
-    assert migrations.read_revision(old_home) == 7
+    assert migrations.read_revision(old_home) == migrations.latest_revision()
     before = target.stat().st_mtime_ns
     migrations.apply(old_home)
     migrations.MIGRATIONS[6].apply(old_home)
@@ -160,7 +160,7 @@ def test_retry_after_publication_before_source_removal(old_home, monkeypatch):
     assert migrations.read_revision(old_home) == 6
     migrations.apply(old_home)
     assert not source.exists()
-    assert migrations.read_revision(old_home) == 7
+    assert migrations.read_revision(old_home) == migrations.latest_revision()
 
 
 def test_snapshot_restores_original_prose_and_absent_destinations_after_failure(

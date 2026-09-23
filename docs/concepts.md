@@ -90,8 +90,8 @@ context selection, and [Configuration](configuration.md#workspacejson) for overr
 
 Notes are Markdown files in `shared/knowledge/` by default. Workspace knowledge roots are
 also supported. The agent writes through `enso knowledge`; the viewer browses folders,
-search results, links, and backlinks. Update existing notes where they live and link across
-roots instead of copying them.
+search results, links, and backlinks, and pins notes to the Knowledge home. Update existing
+notes where they live and link across roots instead of copying them.
 
 Fresh homes receive an editable starter collection, including `Meta/Guide.md` for filing
 and writing conventions. Existing collections are preserved. [Knowledge](knowledge.md)

@@ -1,9 +1,9 @@
 # Web viewer
 
-The optional web UI shows configuration, files, tasks, and execution history, and edits
-instructions and secrets. There is no authentication: anyone who can reach it can read private
-content and change what agents are told. Keep it on localhost or a private network such as
-Tailscale. See [Access](#access).
+The optional web UI shows configuration, files, tasks, and execution history, edits
+instructions and secrets, and pins knowledge notes. There is no authentication: anyone who
+can reach it can read private content and change what agents are told. Keep it on localhost
+or a private network such as Tailscale. See [Access](#access).
 
 ## Running it
 
@@ -21,8 +21,9 @@ enso web uninstall                 # stop and remove automatic startup
 
 The viewer runs separately from `enso serve`, reading files and `enso.db` even when the
 agent service is stopped. Browsing opens the database read-only. Writes respect maintenance
-admission, and secret operations use short transactions. Without the optional dependencies,
-`status`, `stop`, and `uninstall` still work; `start` and `install` explain the missing extra.
+admission, and secret and pin operations use short transactions. Without the optional
+dependencies, `status`, `stop`, and `uninstall` still work; `start` and `install` explain the
+missing extra.
 
 Standalone `start` logs to `~/.enso/web.log`. `install` adds a launchd/systemd user service
 that logs to `~/.enso/launchd-web.log` and restarts after crashes and user logins.
@@ -195,9 +196,9 @@ a job entirely.
 
 ### Knowledge
 
-`/knowledge` opens shared knowledge directly, with recently updated notes across all roots.
-Retained workspace roots follow under **Workspaces**. [Knowledge](knowledge.md) owns note
-format, links, writing, and imports.
+`/knowledge` opens shared knowledge directly. **Pinned** notes lead, sorted by title, then
+**Recently updated** notes across all roots. Retained workspace roots follow under
+**Workspaces**. [Knowledge](knowledge.md) owns note format, links, writing, and imports.
 
 **Browse** shows immediate folders alphabetically, then notes in the current folder.
 **All notes** includes descendants; at Knowledge home it includes every root. Breadcrumbs
@@ -219,13 +220,17 @@ then a local calendar date.
 Notes with unique valid IDs open at `/knowledge/notes/<id>`, which survives moves. Other
 notes use scope/path URLs and display metadata findings. Filenames supply titles; frontmatter
 is hidden in the reading view. Dates appear above the body; **View source** shows the complete
-file. **In this folder** opens a panel with up to 20 items and a link to the full folder.
-It starts collapsed, giving the note the full reading area. With JavaScript and browser
-storage available, the viewer remembers the choice across notes and reloads in that browser.
-At 1000px and below, the panel opens above the note instead of beside it. The disclosure
-also works without JavaScript, starting collapsed on each page. Paragraphs keep a comfortable
-reading width while tables can use the full document width. **Linked from** shows up to 50
-incoming notes and the total count.
+file. The pin button beside them adds the note to **Pinned** or removes it, then returns to
+the same view; a filled cyan pin marks a pinned note. Pins are stored in `enso.db` by note ID,
+so they follow moves and renames and never change the note file. Only notes with a unique
+valid ID can be pinned. Pins of deleted or duplicated IDs are hidden, and pinned notes also
+remain in **Recently updated**. **In this folder** opens a panel with up to 20 items and a
+link to the full folder. It starts collapsed, giving the note the full reading area. With
+JavaScript and browser storage available, the viewer remembers the choice across notes and
+reloads in that browser. At 1000px and below, the panel opens above the note instead of
+beside it. The disclosure also works without JavaScript, starting collapsed on each page.
+Paragraphs keep a comfortable reading width while tables can use the full document width.
+**Linked from** shows up to 50 incoming notes and the total count.
 
 Resolved wiki and Markdown links stay inside the viewer. Ambiguous or missing links are
 marked; a missing heading is marked while its note remains clickable. Stable links, browser
@@ -439,6 +444,7 @@ uses GET. The only writes are form POSTs:
 | --- | --- |
 | `POST /home/instructions` | The home's `AGENTS.md` |
 | `POST /workspaces/<name>/instructions` | A workspace's `AGENTS.md` |
+| `POST /knowledge/pins` | Pins or unpins a knowledge note |
 | `POST /secrets` | A new secret |
 | `POST /secrets/<name>/delete` | Deletes a secret |
 

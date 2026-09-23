@@ -11,6 +11,16 @@
     <span>Updated {{ updated|when }}</span>
     {% if created %}<span>Created {{ created|when }}</span>{% endif %}
     <a href="{{ note_url if raw else raw_url }}">{{ 'Read note' if raw else 'View source' }}</a>
+    {% if pinned is not none %}
+    {% set action = ('Unpin ' if pinned else 'Pin ') ~ note.title %}
+    <form class="knowledge-pin" method="post" action="/knowledge/pins">
+      <input type="hidden" name="_csrf" value="{{ csrf }}">
+      <input type="hidden" name="id" value="{{ note.id }}">
+      <input type="hidden" name="pinned" value="{{ '0' if pinned else '1' }}">
+      {% if raw %}<input type="hidden" name="raw" value="1">{% endif %}
+      <button class="icon-button{% if pinned %} is-pinned{% endif %}" type="submit" aria-label="{{ action }}" title="{{ action }}">{{ icon('pin') }}</button>
+    </form>
+    {% endif %}
   </div>
   <details class="knowledge-context" data-folder-context>
     <summary aria-controls="folder-items">{{ icon('chevron-right', 14) }}<span>In this folder <span class="muted">· {{ sibling_count }}</span></span></summary>

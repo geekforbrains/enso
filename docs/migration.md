@@ -124,6 +124,16 @@ Managed updates apply this step automatically. Editable installations use the
 Installed instructions and skills are not rewritten by this format conversion; any custom
 references or scripts that edit `WORKSPACE.md` must be updated to the new JSON format.
 
+## Knowledge pins migration
+
+Home revision **8** upgrades SQLite to schema **5**, adding the empty table that stores
+[pinned knowledge notes](web.md#knowledge). Existing rows, registered user tables, and
+knowledge files are unchanged. A home without a database skips the step; the database is
+created at the current schema when first needed. The step runs in one transaction and
+recognizes a database already at schema 5 on retry. Managed updates apply it automatically.
+Editable installations use the
+[manual development migration](development.md#manual-development-migrations) before refresh.
+
 ## Declare everything the step changes
 
 `plan(paths)` calls each pending step's `paths` function without changing the home. These

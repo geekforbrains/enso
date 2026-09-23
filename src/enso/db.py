@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 from .config import LEGACY_HOME_MESSAGE, Paths, split_job_ref
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 APPLICATION_ID = 0x454E534F  # ENSO: distinguishes the new schema line from 0.1.x.
 
 _SCHEMA = """
@@ -225,6 +225,9 @@ CREATE TABLE _enso_worktrees (
   branch TEXT NOT NULL, base TEXT NOT NULL, start_revision TEXT NOT NULL,
   status TEXT NOT NULL DEFAULT 'ready', error TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+
+-- Notes pinned in the viewer, by permanent note id so a pin survives moves and renames.
+CREATE TABLE _enso_knowledge_pins (note_id TEXT PRIMARY KEY, pinned_at TEXT NOT NULL);
 """
 
 
@@ -512,3 +515,29 @@ def set_failure(paths: Paths, job: str, fingerprint: str | None, alerted_at: str
                  failure_alerted_at = excluded.failure_alerted_at""",
             (*split_job_ref(job), fingerprint, alerted_at),
         )
+
+
+# -- Knowledge pins -----------------------------------------------------------
+
+
+def pinned_notes(paths: Paths) -> set[str]:
+    """The note ids pinned in the viewer; a home without a database has none."""
+    try:
+        with reader(paths) as con:
+            return {row[0] for row in con.execute("SELECT note_id FROM _enso_knowledge_pins")}
+    except MissingDatabaseError:
+        return set()
+
+
+def set_pinned(paths: Paths, note_id: str, pinned: bool) -> None:
+    """Pin or unpin one note; repeating either is harmless."""
+    initialize(paths)
+    with transaction(paths) as con:
+        if pinned:
+            con.execute(
+                "INSERT INTO _enso_knowledge_pins (note_id, pinned_at) VALUES (?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (note_id, now()),
+            )
+        else:
+            con.execute("DELETE FROM _enso_knowledge_pins WHERE note_id = ?", (note_id,))

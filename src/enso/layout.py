@@ -88,7 +88,7 @@ HOME: tuple[Entry, ...] = (
     Entry("workspaces", REQUIRED, "one directory per workspace"),
     Entry("config.json", MANAGED, "the configuration", private=True),
     Entry("config.example.json", MANAGED, "the editable configuration template"),
-    Entry("enso.db", MANAGED, "runs, tasks, beats, and encrypted secrets"),
+    Entry("enso.db", MANAGED, "runs, tasks, beats, pins, and encrypted secrets"),
     Entry("enso.db-wal", MANAGED, "SQLite's write-ahead log"),
     Entry("enso.db-shm", MANAGED, "SQLite's shared-memory index"),
     Entry("enso.log", MANAGED, "the service log"),
