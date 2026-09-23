@@ -8,13 +8,13 @@
   {{ k.breadcrumbs(crumbs, current=true) }}
 </div>
 {{ m.subtabs(tabs, current_tab) }}
-<form class="toolbar knowledge-search" action="/knowledge" method="get">
+<form class="toolbar knowledge-search" action="/knowledge" method="get" data-autosubmit>
   <input type="hidden" name="scope" value="{{ scope }}">
   <input type="hidden" name="folder" value="{{ folder }}">
   <input type="hidden" name="view" value="{{ view }}">
   {{ m.search('Search notes in this folder and below…' if scope != 'all' else 'Search all knowledge…', name='q', value=q, label='Search note titles and contents') }}
   {% if scope != 'all' %}<label class="knowledge-check"><input type="checkbox" name="across" value="1"{% if across %} checked{% endif %}> All knowledge</label>{% endif %}
-  {{ m.filter_button('Search', hide=False) }}
+  {{ m.filter_button('Search') }}
   {% if q %}<a href="{{ clear_url }}">Clear</a>{% endif %}
 </form>
 {{ m.error(pins_error, "Pinned notes could not be read") }}

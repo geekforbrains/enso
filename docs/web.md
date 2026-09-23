@@ -62,8 +62,11 @@ they do not refresh automatically.
 
 `/` redirects to `/today`. `/home` belongs to Workspaces. Filters sit in one row above
 lists, with descriptive first options such as `Any job`. Search grows to fill the row;
-`/` focuses it. In-place filters update the visible count. Server-filtered lists state
-their scope beside the count. Empty lists show one sentence.
+`/` focuses it. Search fields have no button: in-place searches filter the page as you type,
+and searches beyond the page, on Knowledge and Tasks, run on Enter. Selects and search options
+apply on change. Without JavaScript, a **Filter** or **Search** button submits the row instead.
+In-place filters update the visible count. Server-filtered lists state their scope beside the
+count. Empty lists show one sentence.
 
 At 820px and below, navigation becomes **Today, Knowledge, Tasks, Heartbeats, More**. More
 contains the remaining views in the same groups, highlights its active destination, and carries
@@ -207,7 +210,7 @@ pins in subfolders appear in their own folder. Search and **All notes** omit **P
 move up. Notes, folder context, and backlinks sort by updated date, then path; unknown update
 dates use file modification time.
 
-Search submits with Enter or **Search** and stays in the URL. Knowledge home searches every
+Search runs on Enter and stays in the URL. Knowledge home searches every
 root. Within a folder, search covers that folder and descendants; **All knowledge** broadens
 it to every root. Notes rank by exact title/path,
 literal title/path substring, matching path words, then a literal phrase in the body.

@@ -24,6 +24,8 @@ All notable changes to Enso are documented here, following
   leaving more room for reading. On smaller screens it opens above the note.
 - Knowledge rows show shared note locations from their folder, such as
   `Areas / Meteor / Meteor.md`, without a leading `Shared`.
+- Knowledge search has no **Search** button, matching every other search field: press Enter
+  to search, and **All knowledge** reruns a search that has text.
 
 ### Fixed
 

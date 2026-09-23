@@ -143,10 +143,43 @@ async def test_knowledge_search_navigation_and_refresh(browser, viewer, enso_hom
     guide.rename(paths / "Shipping guide.md")
     await page.reload()
     await expect(rows).to_have_count(0)
+    # Like every search field, Enter runs it; the button is only the no-script fallback.
+    button = page.get_by_role("button", name="Search", exact=True)
+    await (expect(button).to_be_hidden() if javascript else expect(button).to_be_visible())
     await search.fill("shipping")
-    await page.get_by_role("button", name="Search", exact=True).click()
+    await search.press("Enter")
     await expect(rows).to_have_count(1)
     await expect(rows.first).to_contain_text("Shipping guide")
+
+    # Inside a folder, All knowledge reruns a search with text and waits on an empty one.
+    (paths / "Guides").mkdir()
+    (paths / "Guides/Setup.md").write_text(knowledge.normalize_text("Local setup."))
+    await page.goto(viewer + "knowledge?scope=shared&folder=Guides")
+    across = page.get_by_role("checkbox", name="All knowledge")
+    if javascript:
+        form = page.locator("form.knowledge-search")
+        await form.evaluate(
+            "form => { window.submits = 0; window.countSubmit = event => {"
+            " window.submits += 1; event.preventDefault(); };"
+            " form.addEventListener('submit', window.countSubmit); }"
+        )
+        await across.check()
+        await across.uncheck()
+        assert (
+            await form.evaluate(
+                "form => { form.removeEventListener('submit', window.countSubmit);"
+                " return window.submits; }"
+            )
+            == 0
+        )
+    await search.fill("shipping")
+    await search.press("Enter")
+    await expect(rows).to_have_count(0)
+    await across.check()
+    if not javascript:
+        await search.press("Enter")
+    await expect(rows).to_have_count(1)
+    await expect(across).to_be_checked()
     await context.close()
 
 

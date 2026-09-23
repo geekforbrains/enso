@@ -133,11 +133,20 @@
     trigger.hidden = false;
   }
 
+  // Selects apply at once. A checkbox refines the form's search, so it reruns only a search
+  // that has text; an empty one applies the choice on the next Enter.
   function setupAutosubmit(form) {
+    function submit() {
+      if (typeof form.requestSubmit === "function") form.requestSubmit();
+      else form.submit();
+    }
+    var search = form.querySelector("input[type=search][name]");
     Array.prototype.slice.call(form.querySelectorAll("select[name]")).forEach(function (select) {
-      select.addEventListener("change", function () {
-        if (typeof form.requestSubmit === "function") form.requestSubmit();
-        else form.submit();
+      select.addEventListener("change", submit);
+    });
+    Array.prototype.slice.call(form.querySelectorAll("input[type=checkbox][name]")).forEach(function (box) {
+      box.addEventListener("change", function () {
+        if (!search || search.value.trim()) submit();
       });
     });
   }
