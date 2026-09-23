@@ -87,6 +87,12 @@ def _stamp(value: Any) -> datetime | None:
     return filters.parse_time(value) if isinstance(value, (str, datetime)) else None
 
 
+def _location(root: kb.Root, path: str) -> str:
+    """A row's spaced path; shared knowledge needs no root name, a workspace root keeps it."""
+    parts = path.split("/")
+    return " / ".join(parts if root.scope == SHARED else [root.label, *parts])
+
+
 def _recent_first(notes: Iterable[kb.Note]) -> list[kb.Note]:
     """Browse lists and equally relevant search results use recency, then path."""
     return sorted(sorted(notes, key=lambda note: note.path), key=_updated, reverse=True)
@@ -179,7 +185,7 @@ def _note_row(note: kb.Note, query: str = "", *, catalog: kb.Catalog) -> dict[st
         "title": note.title,
         "href": note_url(note, catalog),
         "path": note.path,
-        "scope": note.root.label,
+        "location": _location(note.root, note.path),
         "kind": "note",
         "updated": _updated(note),
         "excerpt": excerpt,
@@ -253,7 +259,7 @@ def _matching_folders(notes: Iterable[kb.Note], prefix: str, needle: str) -> lis
                     "kind": "folder",
                     "href": browse_url(scope=note.scope, folder=path),
                     "path": path,
-                    "scope": note.root.label,
+                    "location": _location(note.root, path),
                     "count": 0,
                 },
             )

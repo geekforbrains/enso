@@ -217,7 +217,8 @@ first, alphabetically; All notes returns notes only.
 
 Lists use `web.knowledge.page_size` (50 by default), counts, ranges, and Previous/Next links.
 They never expand the entire tree. Rows show location and relative age through seven days,
-then a local calendar date.
+then a local calendar date. Shared locations start at the folder, such as
+`Areas / Meteor / Meteor.md`; workspace roots keep their name first.
 
 Notes with unique valid IDs open at `/knowledge/notes/<id>`, which survives moves. Other
 notes use scope/path URLs and display metadata findings. Filenames supply titles; frontmatter

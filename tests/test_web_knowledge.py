@@ -95,8 +95,12 @@ async def test_mixed_folders_pagination_and_scoped_search(client, enso_home):
     found = knowledge_rows(await (await client.get("/knowledge?q=nested")).text())
     assert [row.find("span", "title")[0].text for row in found] == ["Nested", "Deep"]
     assert found[0].attrs["href"] == "/knowledge?scope=shared&folder=Mixed%2FNested"
-    assert "Shared / Mixed / Nested" in found[0].text and "1 note" in found[0].text
-    assert "Shared / Mixed / Nested / Deep.md" in found[1].text  # spaced path segments
+    # Shared locations start at their folder; a workspace root keeps its name.
+    assert found[0].find("span", "detail")[0].text == "Mixed / Nested"
+    assert "1 note" in found[0].text
+    assert found[1].find("span", "detail")[0].text == "Mixed / Nested / Deep.md"
+    across = knowledge_rows(await (await client.get("/knowledge?q=needle+in+workspace")).text())
+    assert [row.find("span", "detail")[0].text for row in across] == ["autodiscovered / Work.md"]
     inside = await client.get("/knowledge?scope=shared&folder=Mixed&q=mixed")
     titles = [row.find("span", "title")[0].text for row in knowledge_rows(await inside.text())]
     assert titles == ["Deep", "Overview"]  # the searched folder is not its own result

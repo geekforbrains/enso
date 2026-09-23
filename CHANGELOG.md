@@ -22,6 +22,8 @@ All notable changes to Enso are documented here, following
   split into Overview, Instructions, and Files tabs.
 - Knowledge's **In this folder** panel starts collapsed and remembers the browser's choice,
   leaving more room for reading. On smaller screens it opens above the note.
+- Knowledge rows show shared note locations from their folder, such as
+  `Areas / Meteor / Meteor.md`, without a leading `Shared`.
 
 ### Fixed
 
