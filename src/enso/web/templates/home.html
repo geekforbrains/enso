@@ -13,7 +13,7 @@
 {{ m.error(error, "The audit could not run") }}
 
 {% if section == 'instructions' %}
-{% call m.instructions_editor(editor, csrf) %}Every chat and job reads these, in every workspace. A workspace's own instructions add to them.{% endcall %}
+{{ m.instructions_editor(editor, csrf) }}
 {% else %}
 <section aria-labelledby="shared-head">
   <div class="shead"><h2 id="shared-head">Shared by every workspace</h2></div>
