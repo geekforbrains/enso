@@ -49,10 +49,10 @@ they do not refresh automatically.
 | View | Sections |
 | --- | --- |
 | [Today](#today) `/today` | Schedule · Activity · Reliability |
+| [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Tasks](#tasks) `/tasks` | Project navigation, workflow, and grouped board |
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat has Overview · History · Runs |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
-| [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
 | [Workspaces](#workspaces) `/workspaces` | Home, then workspaces; each has Overview · Instructions, and workspaces add Files |
 | [Jobs](#jobs) `/jobs` | Each job has Overview · History |
 | [Skills](#skills) `/skills` | Skills grouped by scope |
@@ -64,7 +64,7 @@ lists, with descriptive first options such as `Any job`. Search grows to fill th
 `/` focuses it. In-place filters update the visible count. Server-filtered lists state
 their scope beside the count. Empty lists show one sentence.
 
-At 820px and below, navigation becomes **Today, Tasks, Heartbeats, Runs, More**. More contains
+At 820px and below, navigation becomes **Today, Knowledge, Tasks, Heartbeats, More**. More contains
 the remaining views in the same groups, highlights its active destination, and carries the
 Health attention indicator. It uses native disclosure; JavaScript adds focus management,
 Escape, and outside click dismissal. Section tabs become segmented controls. Filters wrap,

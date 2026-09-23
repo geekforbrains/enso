@@ -59,10 +59,10 @@ NAV_GROUPS: tuple[tuple[str | None, tuple[tuple[str, str], ...]], ...] = (
         None,
         (
             ("Today", "/today"),
+            ("Knowledge", "/knowledge"),
             ("Tasks", "/tasks"),
             ("Heartbeats", "/heartbeats"),
             ("Runs", "/runs"),
-            ("Knowledge", "/knowledge"),
         ),
     ),
     (

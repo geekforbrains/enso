@@ -12,8 +12,9 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
-- The web sidebar groups Workspaces, Jobs, Skills, and Secrets under **Setup**, with Health at
-  its foot. Skills has its own entry, the home has a page under Workspaces, and workspace pages
+- The web sidebar puts Knowledge second and groups Workspaces, Jobs, Skills, and Secrets under
+  **Setup**, with Health at its foot. On phones, Knowledge joins the bottom bar and Runs moves
+  to More. Skills has its own entry, the home has a page under Workspaces, and workspace pages
   split into Overview, Instructions, and Files tabs.
 - Knowledge's **In this folder** panel starts collapsed and remembers the browser's choice,
   leaving more room for reading. On smaller screens it opens above the note.

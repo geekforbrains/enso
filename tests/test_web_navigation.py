@@ -81,10 +81,10 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     (sidebar,) = root.find("nav", "side-nav")
     assert [node.attrs["href"] for node in sidebar.find("a")] == [
         "/today",
+        "/knowledge",
         "/tasks",
         "/heartbeats",
         "/runs",
-        "/knowledge",
         "/workspaces",
         "/jobs",
         "/skills",
@@ -101,9 +101,9 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert primary.tag == "ul" and len(primary.children) == 5
     assert [item.children[0].attrs["href"] for item in primary.children[:4]] == [
         "/today",
+        "/knowledge",
         "/tasks",
         "/heartbeats",
-        "/runs",
     ]
     (more,) = primary.children[-1].find("details")
     assert more.children[0].tag == "summary"
@@ -111,7 +111,7 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert "open" not in more.attrs
     assert more.children[0].attrs["aria-controls"] == "more-sections"
     assert [node.attrs["href"] for node in more.find("a")] == [
-        "/knowledge",
+        "/runs",
         "/workspaces",
         "/jobs",
         "/skills",
@@ -127,7 +127,8 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     ("path", "parent", "under_more"),
     [
         ("/tasks/EN-001", "/tasks", False),
-        ("/knowledge/notes/abc", "/knowledge", True),
+        ("/knowledge/notes/abc", "/knowledge", False),
+        ("/runs/abc", "/runs", True),
         ("/skills/enso-heartbeat", "/skills", True),
         ("/home/instructions", "/workspaces", True),  # the home belongs to Workspaces
     ],
