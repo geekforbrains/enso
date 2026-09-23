@@ -16,7 +16,7 @@
 {{ m.error(error, "The audit could not run") }}
 
 {% if section == 'instructions' %}
-{% call m.instructions_editor(editor, csrf) %}Chats and jobs in this workspace read these after the <a href="/home/instructions">home instructions</a>.{% endcall %}
+{{ m.instructions_editor(editor, csrf) }}
 
 {% elif section == 'files' %}
 <section aria-labelledby="files-head">

@@ -244,8 +244,8 @@
 {%- endmacro %}
 
 {# The AGENTS.md editor: a plain form that saves without the script, which only adds the
-   unsaved-changes warning and Cmd/Ctrl+S. An optional `caller()` adds help. A refused save
-   renders the submitted text and marks the form dirty, since the file does not hold it.
+   unsaved-changes warning and Cmd/Ctrl+S. A refused save renders the submitted text and
+   marks the form dirty, since the file does not hold it.
    The newline after the textarea's opening tag is the one HTML drops, so a leading blank
    line in the file survives the round trip. #}
 {% macro instructions_editor(editor, csrf) -%}
@@ -272,12 +272,11 @@
     <button class="button" type="submit">Save</button>
   </div>
   <code class="editor-path">{{ editor.path }}</code>
-  {% set help = (caller() if caller is defined else '')|trim %}
-  {% if help or not editor.exists %}
-  <p id="instructions-help" class="muted">{{ help }}{% if not editor.exists %} The file is missing; saving creates it.{% endif %}</p>
+  {% if not editor.exists %}
+  <p id="instructions-help" class="muted">The file is missing; saving creates it.</p>
   {% endif %}
   <textarea id="instructions-text" name="text" spellcheck="false" autocapitalize="off"
-            autocomplete="off"{% if help or not editor.exists %} aria-describedby="instructions-help"{% endif %}>
+            autocomplete="off"{% if not editor.exists %} aria-describedby="instructions-help"{% endif %}>
 {{ editor.text }}</textarea>
 </form>
 {% endif %}

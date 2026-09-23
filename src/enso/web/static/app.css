@@ -1031,7 +1031,7 @@
     .editor-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-5); }
     label { font-weight: 500; }
     .editor-path { color: var(--fg-3); font-size: var(--text-xs); overflow-wrap: anywhere; }
-    p { margin: 0 0 var(--s-3); a { color: var(--link); text-decoration: underline; } }
+    p { margin: 0 0 var(--s-3); }
     textarea {
       width: 100%; min-width: 0; min-height: 16rem; height: min(70vh, 56rem);
       padding: var(--s-5) var(--s-6); border: 1px solid var(--border); border-radius: var(--r-lg);
