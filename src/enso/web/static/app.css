@@ -450,8 +450,8 @@
 
   /* -- Facts as columns ------------------------------------------------------
      Sized to their own content, facts line up down a list only by luck: a row scheduled
-     `0 10 * * *` starts its workspace where the row above it, reading `when work is ready`,
-     has already reached its agent. A list whose rows all carry the same facts in the same
+     `0 10 * * *` starts its agent where the row above it, reading `when work is ready`,
+     is still spelling out its timing. A list whose rows all carry the same facts in the same
      order opts into `columns` and gets one axis per fact instead, the width split evenly.
 
      Dividing evenly is only half of it, because every row has to be dividing the same box,
@@ -462,8 +462,8 @@
      the longest countdown it can hold, and then spends less on the title: these are names
      rather than sentences, and it is the facts that need the room.
 
-     The second breakpoint is the price of an even split. A third of the facts' width has to
-     hold the widest fact of the three, and below this it cannot, so the list would be trading
+     The second breakpoint is the price of an even split. Each share of the facts' width has
+     to hold the widest fact, and below this it cannot, so the list would be trading
      a clipped `claude / sonnet / medium` for its columns. Narrower than this it goes back to
      the sizing above, which spends the width where the text is. */
 

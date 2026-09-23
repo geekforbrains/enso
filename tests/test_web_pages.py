@@ -667,15 +667,17 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
     assert "9 * * *" in body  # the schedule is the one fact a row keeps
 
     # The facts are equal columns on a wide list, which holds only while every row spends
-    # the same three slots in the same order, so a job whose file will not parse dashes the
-    # two it cannot answer instead of dropping them and sliding the column.
+    # the same two slots in the same order, so a job whose file will not parse dashes the
+    # one it cannot answer instead of dropping it and sliding the column.
     assert body.count('<span class="detail columns">') == body.count('<a class="row entity"')
     garbled_row = re.search(
         r'<a class="row entity" href="/jobs/default%3Agarbled".*?</a>', body, re.DOTALL
     )
     assert garbled_row is not None
     assert '<span class="err">unreadable</span>' in garbled_row.group(0)
-    assert garbled_row.group(0).count("<span>-</span>") == 2
+    assert garbled_row.group(0).count("<span>-</span>") == 1
+    # The heading carries the workspace, so the row is titled by the job's directory alone.
+    assert '<span class="title">garbled</span>' in garbled_row.group(0)
 
     # The sparkline box is a fixed width its marks never scale inside, so it anchors right:
     # the newest run lands on the same axis in every row, beside the value it explains.
@@ -704,6 +706,19 @@ async def test_jobs_list_and_detail(client: TestClient, home: Home) -> None:
         "needs a leading --- frontmatter block" in garbled and "This job has never run" in garbled
     )
     assert "Not found" in await page(client, "/jobs/default%3Anope", 404)
+
+
+async def test_jobs_are_grouped_by_workspace(client: TestClient, home: Home) -> None:
+    home.paths.workspace("alpha").mkdir(parents=True)
+    write_job(home.paths, "digest", workspace="alpha")
+
+    body = await page(client, "/jobs")
+    headings = re.findall(r'<div class="hourhead" data-group>\s*<b>([^<]+)</b>', body)
+    assert headings == ["alpha", "default"]
+    alpha, default = body.split('<div class="hourhead" data-group>')[1:]
+    assert 'href="/jobs/alpha%3Adigest"' in alpha and "1 job</span>" in alpha
+    assert 'href="/jobs/default%3Anightly"' in default and "3 jobs</span>" in default
+    assert 'href="/jobs/alpha%3Adigest"' not in default
 
 
 async def test_a_bad_schedule_stays_visible(client: TestClient, home: Home) -> None:

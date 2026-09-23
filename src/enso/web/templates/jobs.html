@@ -25,7 +25,14 @@
   </div>
 
   <div class="panel rows">
-    {% for row in rows %}
+    {% for group in groups %}
+    {# The heading owns the rows under it: the script hides it and recounts it when the
+       filter empties it, so a heading never stands over nothing. #}
+    <div class="hourhead" data-group>
+      <b>{{ group.workspace }}</b>
+      <span data-group-count data-singular="job" data-plural="jobs">{{ group.rows|length }} job{{ 's' if group.rows|length != 1 }}</span>
+    </div>
+    {% for row in group.rows %}
     {% set job = row.job %}
     {% set history = recent.get(row.ref, []) %}
     {% set failed = history|selectattr('status', 'in', ['error', 'timeout', 'gate_error'])|list %}
@@ -37,13 +44,13 @@
       {% set state_label = 'failing or broken' if state == 'error' else ('disabled' if state == 'muted' else 'healthy') %}
       <span class="pin {{ state }}" role="img" aria-label="{{ state_label }}" title="{{ state_label }}"></span>
       <span class="body">
-        <span class="title">{{ row.ref }}</span>
-        {# Equal columns, so timing, workspace and agent each keep one axis down the list.
-           That only holds while every row spends the same three slots, so a job whose file
-           will not parse dashes the two it cannot answer rather than dropping them. #}
+        {# The heading carries the workspace, so the row names the job by its directory. #}
+        <span class="title">{{ row.name }}</span>
+        {# Equal columns, so timing and agent each keep one axis down the list. That only
+           holds while every row spends the same two slots, so a job whose file will not
+           parse dashes the one it cannot answer rather than dropping it. #}
         <span class="detail columns">
           {% if not job %}<span class="err">unreadable</span>{% elif job.schedule %}<code>{{ job.schedule }}</code>{% else %}<span>when work is ready</span>{% endif %}
-          <span>{{ job.workspace if job else '-' }}</span>
           <span>{% if job and job.agent %}<code>{{ job.agent.provider }}</code> / <code>{{ job.agent.model }}</code> / <code>{{ job.agent.effort }}</code>{% elif job %}{{ row.kind|capitalize }}{% else %}-{% endif %}</span>
         </span>
       </span>
@@ -54,6 +61,7 @@
         {% endif %}
       </span>
     </a>
+    {% endfor %}
     {% endfor %}
   </div>
   <p class="state empty" data-empty hidden>No job matches.</p>

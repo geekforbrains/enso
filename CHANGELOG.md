@@ -35,6 +35,8 @@ All notable changes to Enso are documented here, following
   `Areas / Meteor / Meteor.md`, without a leading `Shared`.
 - Knowledge search has no **Search** button, matching every other search field: press Enter
   to search, and **All knowledge** reruns a search that has text.
+- Jobs groups its rows under workspace headings, like Skills. Rows show the job's directory
+  name and drop the now-repeated workspace column.
 
 ### Fixed
 

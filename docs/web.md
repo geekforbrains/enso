@@ -387,9 +387,11 @@ special, non-UTF-8, or larger-than-128-KiB file is shown as an error without a f
 
 ### Jobs
 
-Job rows show directory name, schedule, workspace, executor, recent outcomes, and next run
-or why it will not run. Facts align in equal columns on wide lists; fixed-width sparklines
+Jobs has one row per job, grouped under alphabetical workspace headings. Rows show directory
+name, schedule, executor, recent outcomes, and next run or why it will not run; headings
+provide the workspace. Facts align in equal columns on wide lists; fixed-width sparklines
 align their newest run at the right edge. Stage jobs without cron show `when work is ready`.
+Search and filters update counts and hide emptied headings without a reload.
 
 **Overview** shows configuration, safely rendered prompt, gate/postrun commands and timeouts,
 follow-up limit, concurrency policy, recent outcomes, and validation problems. Stage jobs also

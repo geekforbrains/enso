@@ -751,6 +751,31 @@ class JobRow:
     next_run: datetime | None
     kind: str | None = None
 
+    @property
+    def workspace(self) -> str:
+        return self.ref.partition(":")[0]
+
+    @property
+    def name(self) -> str:
+        """The job's directory name: its reference without the workspace."""
+        return self.ref.partition(":")[2]
+
+
+@dataclass(frozen=True)
+class JobGroup:
+    """One heading on the Jobs list: the workspace whose ``jobs/`` holds the rows under it."""
+
+    workspace: str
+    rows: list[JobRow]
+
+
+def _job_groups(rows: list[JobRow]) -> list[JobGroup]:
+    """The rows under their workspace, alphabetical; a workspace without jobs has no heading."""
+    grouped: dict[str, list[JobRow]] = {}
+    for row in rows:
+        grouped.setdefault(row.workspace, []).append(row)
+    return [JobGroup(name, grouped[name]) for name in sorted(grouped)]
+
 
 def _job_kind(job: Job | None, config: Config | None) -> str | None:
     if job is None:
@@ -807,6 +832,7 @@ def jobs_model(paths: Paths) -> dict[str, Any]:
         "config_problems": problems,
         "alarm": common.alarm(paths),
         "rows": rows,
+        "groups": _job_groups(rows),
         "recent": recent,
         "error": error,
         "runs_error": runs_error,
