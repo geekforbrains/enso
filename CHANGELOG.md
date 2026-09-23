@@ -5,6 +5,8 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-23
+
 ### Added
 
 - A bundled, enabled `enso-memory` job logs notable chat decisions, commitments,
@@ -16,8 +18,8 @@ All notable changes to Enso are documented here, following
   never overwrites changes made on disk or by an agent after the page loaded.
 - Knowledge notes can be pinned from their page in the web viewer. Pinned notes lead the
   Knowledge home, above **Recently updated**, and their own folder's listing. They stay pinned
-  when a note moves. Pins live in
-  `enso.db`, so updating an existing home runs home migration 8 (database schema 5).
+  when a note moves. Pins live in `enso.db`, so updating an existing home runs home
+  migration 8 (database schema 5).
 
 ### Changed
 
