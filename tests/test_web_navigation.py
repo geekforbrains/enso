@@ -85,11 +85,17 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
         "/heartbeats",
         "/runs",
         "/knowledge",
-        "/jobs",
         "/workspaces",
+        "/jobs",
+        "/skills",
         "/secrets",
         "/health",
     ]
+    # Setup is labelled, and Health sits apart at the foot of the sidebar.
+    assert [node.text for node in sidebar.find("h2", "nav-group")] == ["Setup"]
+    lists = sidebar.find("ul")
+    assert [len(group.find("a")) for group in lists] == [5, 4, 1]
+    assert lists[-1].attrs["class"] == "nav-foot"
     (mobile,) = root.find("nav", "tabs")
     primary = mobile.children[0]
     assert primary.tag == "ul" and len(primary.children) == 5
@@ -106,11 +112,13 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     assert more.children[0].attrs["aria-controls"] == "more-sections"
     assert [node.attrs["href"] for node in more.find("a")] == [
         "/knowledge",
-        "/jobs",
         "/workspaces",
+        "/jobs",
+        "/skills",
         "/secrets",
         "/health",
     ]
+    assert [node.text for node in more.find("h3", "nav-group")] == ["Setup"]
     # Native summary and plain links supply every operation before the script enhances focus.
     assert not mobile.find("button")
 
@@ -120,7 +128,8 @@ def test_desktop_sidebar_and_mobile_more_reach_every_view_without_javascript():
     [
         ("/tasks/EN-001", "/tasks", False),
         ("/knowledge/notes/abc", "/knowledge", True),
-        ("/skills/enso-heartbeat", "/workspaces", True),  # Skills belongs to Workspaces
+        ("/skills/enso-heartbeat", "/skills", True),
+        ("/home/instructions", "/workspaces", True),  # the home belongs to Workspaces
     ],
 )
 def test_deep_links_highlight_their_section_and_more_parent(path, parent, under_more):

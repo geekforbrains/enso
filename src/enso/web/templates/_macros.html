@@ -242,3 +242,40 @@
   <rect class="f-{{ tone }}" x="0" y="0" width="{{ percent }}" height="5" rx="2.5"></rect>
 </svg>
 {%- endmacro %}
+
+{# The AGENTS.md editor: a plain form that saves without the script, which only adds the
+   unsaved-changes warning and Cmd/Ctrl+S. `caller()` says who reads the file. A refused save
+   renders the submitted text and marks the form dirty, since the file does not hold it.
+   The newline after the textarea's opening tag is the one HTML drops, so a leading blank
+   line in the file survives the round trip. #}
+{% macro instructions_editor(editor, csrf) -%}
+{% if editor.notice %}<p class="state success" role="status">{{ editor.notice }}</p>{% endif %}
+{% if not editor.readable %}
+{{ error(editor.error, "AGENTS.md cannot be edited here") }}
+{% else %}
+{% if editor.stale %}
+{{ error(editor.error ~ ". Your text is kept below. Save again to replace the current file, or reload to discard your changes.", "Not saved") }}
+{% if editor.disk is not none %}
+<details class="editor-disk">
+  <summary>Current file on disk</summary>
+  <pre>{{ editor.disk }}</pre>
+</details>
+{% endif %}
+{% else %}
+{{ error(editor.error, "Not saved") }}
+{% endif %}
+<form class="editor" method="post" action="{{ editor.action }}" data-editor{% if editor.dirty %} data-dirty{% endif %}>
+  <input type="hidden" name="_csrf" value="{{ csrf }}">
+  <input type="hidden" name="revision" value="{{ editor.revision }}">
+  <div class="editor-head">
+    <label for="instructions-text">AGENTS.md</label>
+    <button class="button" type="submit">Save</button>
+  </div>
+  <code class="editor-path">{{ editor.path }}</code>
+  <p id="instructions-help" class="muted">{{ caller() }}{% if not editor.exists %} The file is missing; saving creates it.{% endif %}</p>
+  <textarea id="instructions-text" name="text" spellcheck="false" autocapitalize="off"
+            autocomplete="off" aria-describedby="instructions-help">
+{{ editor.text }}</textarea>
+</form>
+{% endif %}
+{%- endmacro %}

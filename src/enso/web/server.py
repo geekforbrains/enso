@@ -1,6 +1,6 @@
 """The web application: explicit routes, shared write protection, templates and process.
 
-Browsing is read-only. Registered form actions require a same-origin form token and
+Browsing uses GET. Registered form actions require a same-origin form token and
 participate in home maintenance admission; every response has shared security headers.
 """
 
@@ -23,7 +23,7 @@ from urllib.parse import quote, urlsplit
 import jinja2
 from aiohttp import web
 
-from .. import __version__, maintenance, secrets
+from .. import __version__, instructions, maintenance, secrets
 from ..config import Paths, check_config
 from . import Bind, PidFile, WebError, filters, knowledge, views
 from . import tasks as taskviews
@@ -50,22 +50,43 @@ STATIC_TYPES = {
     "icon-512.png": "image/png",
 }
 SHUTDOWN_TIMEOUT = 5.0
-NAV = (
-    ("Today", "/today"),
-    ("Tasks", "/tasks"),
-    ("Heartbeats", "/heartbeats"),
-    ("Runs", "/runs"),
-    ("Knowledge", "/knowledge"),
-    ("Jobs", "/jobs"),
-    ("Workspaces", "/workspaces"),
-    ("Secrets", "/secrets"),
-    ("Health", "/health"),
+# URL encoding can grow text sixfold (a newline arrives as %0D%0A), so the largest
+# instructions file still fits and an oversized one gets its own message, not a 413.
+MAX_FORM_BYTES = 1024 * 1024
+# What to watch and read, then what configures Enso, then Health at the sidebar's foot.
+NAV_GROUPS: tuple[tuple[str | None, tuple[tuple[str, str], ...]], ...] = (
+    (
+        None,
+        (
+            ("Today", "/today"),
+            ("Tasks", "/tasks"),
+            ("Heartbeats", "/heartbeats"),
+            ("Runs", "/runs"),
+            ("Knowledge", "/knowledge"),
+        ),
+    ),
+    (
+        "Setup",
+        (
+            ("Workspaces", "/workspaces"),
+            ("Jobs", "/jobs"),
+            ("Skills", "/skills"),
+            ("Secrets", "/secrets"),
+        ),
+    ),
+    (None, (("Health", "/health"),)),
 )
+NAV = tuple(link for _, links in NAV_GROUPS for link in links)
 # The phone has four primary links and More; the sidebar exposes every destination.
 NAV_PRIMARY = NAV[:4]
 NAV_MORE = NAV[4:]
-# Skills are resolved per workspace, so they belong to the Workspaces tab.
-NAV_ALIASES = {"/skills": "/workspaces", "/": "/today"}
+NAV_MORE_GROUPS = tuple(
+    (label, kept)
+    for label, links in NAV_GROUPS
+    if (kept := tuple(link for link in links if link not in NAV_PRIMARY))
+)
+# The home is what every workspace shares, so its page belongs to Workspaces.
+NAV_ALIASES = {"/home": "/workspaces", "/": "/today"}
 LOG_FORMAT = "%(asctime)s %(levelname)-5s %(name)s %(message)s"
 DATE_FORMAT = "%Y-%m-%d %H:%M:%S"
 
@@ -108,9 +129,10 @@ def environment() -> jinja2.Environment:
     )
     env.filters.update(filters.FILTERS)
     env.globals.update(
-        nav=NAV,
+        nav_groups=NAV_GROUPS,
         nav_primary=NAV_PRIMARY,
         nav_more=NAV_MORE,
+        nav_more_groups=NAV_MORE_GROUPS,
         bar_series=filters.bar_series,
         spark_tones=filters.spark_tones,
         version=__version__,
@@ -317,12 +339,64 @@ async def workspaces(request: web.Request) -> web.StreamResponse:
     return render(request, "workspaces.html", model)
 
 
+async def home(request: web.Request) -> web.StreamResponse:
+    paths = request.app[PATHS]
+    section = request.match_info.get("section", "overview")
+    if section not in views.HOME_SECTIONS:
+        return not_found(request, "No such section.")
+    notice = _saved_notice(request)
+    model = await _model(lambda: views.home_model(paths, section, notice=notice))
+    return render(request, "home.html", model)
+
+
 async def workspace(request: web.Request) -> web.StreamResponse:
     paths, name = request.app[PATHS], request.match_info["name"]
-    model = await _model(lambda: views.workspace_model(paths, name))
+    section = request.match_info.get("section", "overview")
+    if section not in views.WORKSPACE_SECTIONS:
+        return not_found(request, "No such section.")
+    notice = _saved_notice(request)
+    model = await _model(lambda: views.workspace_model(paths, name, section, notice=notice))
     if model is None:
         return not_found(request, "No such workspace.")
     return render(request, "workspace.html", model)
+
+
+def _saved_notice(request: web.Request) -> str:
+    return views.SAVED_NOTICE if request.query.get("notice") == "saved" else ""
+
+
+async def instructions_save(request: web.Request) -> web.StreamResponse:
+    """Save the home's or a workspace's AGENTS.md; a refused save re-renders the form."""
+    paths = request.app[PATHS]
+    name = request.match_info.get("name")  # None for the home
+    form = await request.post()
+    if set(form) != {"_csrf", "text", "revision"} or any(len(form.getall(k)) != 1 for k in form):
+        raise web.HTTPBadRequest(reason="Expected one text and one revision")
+    submitted, revision = form["text"], form["revision"]
+    if not isinstance(submitted, str) or not isinstance(revision, str):
+        raise web.HTTPBadRequest(reason="Expected text fields")
+    # Browsers submit every textarea line break as CRLF, so the file's own ending is
+    # unknowable here; instructions are saved with LF.
+    text, expected = submitted.replace("\r\n", "\n"), revision or None
+    try:
+        await _write_model(paths, lambda: instructions.save(paths, name, text, expected=expected))
+    except ValueError:
+        return not_found(request, "No such workspace.")
+    except instructions.InstructionsError as exc:
+        stale = isinstance(exc, instructions.StaleRevisionError)
+        rejected = views.Rejected(text, expected, str(exc), stale)
+        status = 409 if stale else 400
+        if name is None:
+            model = await _model(lambda: views.home_model(paths, "instructions", rejected=rejected))
+            return render(request, "home.html", model, status=status)
+        found = await _model(
+            lambda: views.workspace_model(paths, name, "instructions", rejected=rejected)
+        )
+        if found is None:
+            return not_found(request, "No such workspace.")
+        return render(request, "workspace.html", found, status=status)
+    owner = "/home" if name is None else "/workspaces/" + quote(name, safe="")
+    raise web.HTTPSeeOther(owner + "/instructions?notice=saved")
 
 
 async def workspace_files(request: web.Request) -> web.StreamResponse:
@@ -541,8 +615,13 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
     ("GET", "/today/{section}", today),
     ("GET", "/health", health),
     ("GET", "/health/{section}", health),
+    ("GET", "/home", home),
+    ("GET", "/home/{section}", home),
+    ("POST", "/home/instructions", instructions_save),
     ("GET", "/workspaces", workspaces),
     ("GET", "/workspaces/{name}", workspace),
+    ("GET", "/workspaces/{name}/{section}", workspace),
+    ("POST", "/workspaces/{name}/instructions", instructions_save),
     ("GET", "/workspaces/{name}/files/{root}", workspace_files),
     ("GET", "/workspaces/{name}/files/{root}/{path:.*}", workspace_files),
     ("GET", "/knowledge", knowledge_list),
@@ -570,7 +649,7 @@ ROUTES: tuple[tuple[str, str, Handler], ...] = (
 
 def create_app(paths: Paths, bind: Bind | None = None) -> web.Application:
     """The viewer over ``paths``; ``bind`` only tells the Health page where it listens."""
-    app = web.Application(middlewares=[guard], client_max_size=256 * 1024)
+    app = web.Application(middlewares=[guard], client_max_size=MAX_FORM_BYTES)
     app[CSRF] = tokens.token_urlsafe(32)
     app[PATHS] = paths
     app[BIND] = bind

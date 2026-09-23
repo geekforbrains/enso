@@ -42,8 +42,8 @@ CLI manages its own sessions and permissions. Agent executions use an explicit p
 model, and effort; recurring command jobs run without an agent. See
 [provider configuration](docs/configuration.md#providers).
 
-The viewer browses work and operational state. Its Secrets section also adds and deletes
-encrypted credentials for agents and jobs.
+The viewer browses work and operational state, edits home and workspace instructions, and
+adds or deletes encrypted credentials for agents and jobs.
 
 ![Enso's task board showing example projects in light and dark themes](assets/readme/viewer-tasks.png)
 

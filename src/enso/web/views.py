@@ -20,7 +20,7 @@ from math import ceil
 from typing import Any
 from urllib.parse import quote, urlencode
 
-from .. import audit, db, doctor, runs, skills, tasks, workflows, workspaces
+from .. import audit, db, doctor, instructions, runs, skills, tasks, workflows, workspaces
 from .. import heartbeat as beats
 from .. import log as logsetup
 from ..config import Config, Paths, require_workspace
@@ -420,14 +420,124 @@ def workspaces_model(paths: Paths) -> dict[str, Any]:
     }
 
 
-def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
+HOME_SECTIONS = ("overview", "instructions")
+WORKSPACE_SECTIONS = ("overview", "instructions", "files")
+SAVED_NOTICE = "Instructions saved."
+
+
+@dataclass(frozen=True)
+class Rejected:
+    """A save the editor refused: the operator's text, the revision it named, and why."""
+
+    text: str
+    expected: str | None
+    error: str
+    stale: bool
+
+
+def home_model(
+    paths: Paths, section: str = "overview", *, rejected: Rejected | None = None, notice: str = ""
+) -> dict[str, Any]:
+    home, error = common.attempt(partial(audit.audit_home, paths))
+    names, _ = common.attempt(partial(workspaces.list_workspaces, paths))
+    return {
+        "config_problems": common.read_config(paths)[1],
+        "alarm": common.alarm(paths),
+        "section": section,
+        "path": str(paths.home),
+        "home": home,
+        "workspace_count": len(names or []),
+        "editor": (
+            instructions_editor(paths, None, "/home/instructions", rejected, notice)
+            if section == "instructions"
+            else None
+        ),
+        "error": error,
+    }
+
+
+def workspace_model(
+    paths: Paths,
+    name: str,
+    section: str = "overview",
+    *,
+    rejected: Rejected | None = None,
+    notice: str = "",
+) -> dict[str, Any] | None:
     try:
         require_workspace(paths, name)
     except ValueError:
         return None
     config, problems = common.read_config(paths)
-    projects, projects_error = common.project_summaries(paths, config, workspace=name)
+    # Every tab carries the verdict in its heading, so the audit runs whichever is shown.
     report, error = common.attempt(partial(audit.audit, paths, [name], config=config))
+    model: dict[str, Any] = {
+        "config_problems": problems,
+        "alarm": common.alarm(paths),
+        "section": section,
+        "name": name,
+        "path": str(paths.workspace(name)),
+        "workspace": report.workspaces[0] if report else None,
+        "home": report.home if report else None,
+        "error": error,
+    }
+    if section == "overview":
+        model["projects"], model["projects_error"] = common.project_summaries(
+            paths, config, workspace=name
+        )
+    elif section == "files":
+        model["roots"] = _file_roots(paths, name)
+    else:
+        action = f"/workspaces/{quote(name, safe='')}/instructions"
+        model["editor"] = instructions_editor(paths, name, action, rejected, notice)
+    return model
+
+
+def instructions_editor(
+    paths: Paths,
+    workspace: str | None,
+    action: str,
+    rejected: Rejected | None = None,
+    notice: str = "",
+) -> dict[str, Any]:
+    """The AGENTS.md form. A refused save shows the submitted text, not the file's.
+
+    After a stale save the form carries the file's current revision, so saving again
+    deliberately replaces it; the current text is offered beside the form to compare.
+    """
+    try:
+        current = instructions.read(paths, workspace)
+    except (instructions.InstructionsError, ValueError) as exc:
+        return {"readable": False, "error": str(exc), "notice": ""}
+    editor: dict[str, Any] = {
+        "readable": True,
+        "action": action,
+        "path": str(current.path),
+        "exists": current.revision is not None,
+        "text": current.text,
+        "revision": current.revision or "",
+        "error": "",
+        "stale": False,
+        "disk": None,
+        "dirty": False,
+        "notice": notice,
+    }
+    if rejected is not None:
+        editor.update(
+            text=rejected.text,
+            error=rejected.error,
+            stale=rejected.stale,
+            dirty=True,
+            notice="",
+        )
+        if rejected.stale:
+            editor["disk"] = current.text if current.revision is not None else None
+        else:
+            editor["revision"] = rejected.expected or ""
+    return editor
+
+
+def _file_roots(paths: Paths, name: str) -> list[dict[str, Any]]:
     roots = []
     for root in files.ROOTS:
         directory = paths.workspace(name) / root
@@ -441,18 +551,7 @@ def workspace_model(paths: Paths, name: str) -> dict[str, Any] | None:
         roots.append(
             {"name": root, "is_dir": directory.is_dir(), "entries": entries, "bytes": size}
         )
-    return {
-        "config_problems": problems,
-        "alarm": common.alarm(paths),
-        "name": name,
-        "path": str(paths.workspace(name)),
-        "workspace": report.workspaces[0] if report else None,
-        "home": report.home if report else None,
-        "roots": roots,
-        "projects": projects,
-        "projects_error": projects_error,
-        "error": error,
-    }
+    return roots
 
 
 def files_model(

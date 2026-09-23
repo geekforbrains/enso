@@ -4,11 +4,6 @@
 {% block content %}
 {% call m.phead(now) %}Skills{% endcall %}
 
-{{ m.subtabs([
-  ('Workspaces', '/workspaces', none, none),
-  ('Skills', '/skills', rows|length or none, none),
-], '/skills') }}
-
 {{ m.error(error, "Skills could not be resolved") }}
 
 <div data-filterable>

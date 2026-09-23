@@ -4,21 +4,20 @@
 {% block content %}
 {% call m.phead(now) %}Workspaces{% endcall %}
 
-{{ m.subtabs([
-  ('Workspaces', '/workspaces', workspaces|length or none, none),
-  ('Skills', '/skills', none, none),
-], '/workspaces') }}
-
 {{ m.error(error, "The audit could not run") }}
 
-{% if home and home.findings %}
+{# The home is not a workspace, but its instructions, skills, and knowledge reach every
+   one, so it leads the list and its findings live on its own page like a workspace's. #}
 <section aria-labelledby="home-head">
-  <div class="shead"><h2 id="home-head">Home</h2>
-    {{ m.repair_hint(home.findings) }}
-    <span class="right {{ 'bad' if not home.ok else '' }}">{{ home.summary }}</span></div>
-  <div class="panel rows">{{ m.findings(home.findings) }}</div>
+  <div class="shead"><h2 id="home-head">Home</h2><span class="right">shared by every workspace</span></div>
+  <div class="panel rows">
+    <a class="row entity" href="/home">
+      <span class="pin {{ (home.status if home else 'muted')|status_class }}"></span>
+      <span class="body"><span class="title">Home</span></span>
+      <span class="trail">{% if home %}{{ m.tag(home.status, home.summary) }}{% endif %}</span>
+    </a>
+  </div>
 </section>
-{% endif %}
 
 {% if workspaces %}
 <section aria-labelledby="list-head" data-filterable>

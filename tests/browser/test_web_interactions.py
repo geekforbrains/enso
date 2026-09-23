@@ -1,12 +1,13 @@
 """Optional real-browser checks against a disposable home and loopback viewer."""
 
+import asyncio
 from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestServer
 from conftest import load_job, write_config, write_job
 
-from enso import db, knowledge, runs, secrets
+from enso import db, knowledge, runs, secrets, workspaces
 from enso.config import load_config
 from enso.web.server import create_app
 
@@ -483,5 +484,95 @@ async def test_command_jobs_show_explicit_concurrency_on_mobile(
     await page.goto(viewer + f"runs/{run_id}")
     await expect(page.locator("main")).to_contain_text("Command · no model")
     await expect(page.locator("main")).not_to_contain_text("None/None")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+async def test_instructions_editor_saves_warns_and_keeps_conflicting_edits(
+    browser, viewer, enso_home, raw_config, width, tmp_path
+):
+    name = "a-long-workspace-name-that-has-to-wrap-somewhere-on-a-phone"
+    write_config(enso_home, raw_config)
+    workspaces.seed_home(enso_home)
+    workspaces.create_workspace(enso_home, name)
+    agents = enso_home.workspace(name) / "AGENTS.md"
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900},
+        color_scheme="dark" if width == 320 else "light",
+        reduced_motion="reduce",
+    )
+    page = await context.new_page()
+    errors = []
+    page.on("pageerror", lambda error: errors.append(str(error)))
+    await page.goto(viewer + "workspaces/" + name)
+    await page.get_by_role("link", name="Instructions", exact=True).click()
+    field = page.get_by_label("AGENTS.md", exact=True)
+    await expect(field).to_have_value(agents.read_text())
+
+    # Unsaved text asks before the page goes; dismissing keeps it.
+    await field.click()
+    await page.keyboard.press("ControlOrMeta+End")
+    await page.keyboard.type("Ship small changes.\n")
+    asked = asyncio.get_running_loop().create_future()
+
+    async def stay(dialog):
+        await dialog.dismiss()
+        asked.set_result(dialog.type)
+
+    page.once("dialog", stay)
+    await page.close(run_before_unload=True)
+    assert await asyncio.wait_for(asked, 5) == "beforeunload"
+    assert not page.is_closed()
+
+    await field.press("ControlOrMeta+s")
+    await expect(page.get_by_role("status")).to_have_text("Instructions saved.")
+    assert agents.read_text().endswith("Ship small changes.\n") and "\r" not in agents.read_text()
+
+    # An agent's edit while the page is open is kept; saving again replaces it deliberately.
+    agents.write_text("An agent's note.\n")
+    await field.fill("My edit.\n")
+    await page.get_by_role("button", name="Save", exact=True).click()
+    await expect(page.get_by_role("alert")).to_contain_text("changed since this page loaded")
+    await expect(field).to_have_value("My edit.\n")
+    assert agents.read_text() == "An agent's note.\n"
+    disk = page.locator("details.editor-disk")
+    await disk.locator("summary").click()
+    await expect(disk.locator("pre")).to_contain_text("An agent's note.")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / f"instructions-conflict-{width}.png"), full_page=True)
+    await page.get_by_role("button", name="Save", exact=True).click()
+    await expect(page.get_by_role("status")).to_have_text("Instructions saved.")
+    assert agents.read_text() == "My edit.\n"
+
+    await page.goto(viewer + "home/instructions")
+    await expect(page.get_by_label("AGENTS.md", exact=True)).to_be_visible()
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / f"instructions-home-{width}.png"), full_page=True)
+    await page.goto(viewer + "workspaces")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / f"workspaces-{width}.png"), full_page=True)
+    assert not errors
+    await context.close()
+
+
+async def test_instructions_editor_without_javascript(browser, viewer, enso_home, raw_config):
+    write_config(enso_home, raw_config)
+    workspaces.seed_home(enso_home)
+    agents = enso_home.home / "AGENTS.md"
+    context = await browser.new_context(
+        java_script_enabled=False, viewport={"width": 320, "height": 800}
+    )
+    page = await context.new_page()
+    await page.goto(viewer + "home/instructions")
+    await page.get_by_label("AGENTS.md", exact=True).fill("Shared rules.\n")
+    await page.get_by_role("button", name="Save", exact=True).click()
+    await expect(page.get_by_role("status")).to_have_text("Instructions saved.")
+    assert agents.read_text() == "Shared rules.\n"
+    agents.write_text("Changed elsewhere.\n")
+    await page.get_by_label("AGENTS.md", exact=True).fill("Mine.\n")
+    await page.get_by_role("button", name="Save", exact=True).click()
+    await expect(page.get_by_role("alert")).to_contain_text("changed since this page loaded")
+    assert agents.read_text() == "Changed elsewhere.\n"
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await context.close()

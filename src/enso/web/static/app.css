@@ -155,10 +155,17 @@
     view-transition-name: sidebar;
   }
   .sidebar-version {
-    margin-top: auto; padding: var(--s-7) var(--s-5) 0;
+    padding: var(--s-5) var(--s-5) 0;
     color: var(--fg-3); font-size: var(--text-xs); line-height: var(--lh-xs);
   }
-  .side-nav li + li { margin-top: var(--s-1); }
+  /* The nav fills the sidebar so its last group can sit at the foot, above the version. */
+  .side-nav { flex: 1 0 auto; display: flex; flex-direction: column; }
+  .side-nav li + li, .more-panel li + li { margin-top: var(--s-1); }
+  .side-nav .nav-foot { margin-top: auto; padding-top: var(--s-7); }
+  .nav-group {
+    margin: var(--s-7) 0 var(--s-3); padding: 0 var(--s-5);
+    font-size: var(--text-xs); line-height: var(--lh-xs); font-weight: 500; color: var(--fg-3);
+  }
   .side-nav a, .more-panel a {
     position: relative; display: flex; align-items: center; gap: var(--s-5);
     height: var(--control); padding: 0 var(--s-5); border-radius: var(--r);
@@ -913,9 +920,11 @@
       border: 1px solid var(--border); border-radius: var(--r-lg);
       background: var(--surface); box-shadow: 0 8px 30px rgb(0 0 0 / 0.18);
       h2 { padding: var(--s-3) var(--s-5) var(--s-2); }
+      .nav-group { margin: var(--s-4) 0 var(--s-2); }
       a { height: 40px; }
-      li + li { margin-top: var(--s-1); }
     }
+    /* Under 16px, iOS zooms the page into a focused field and leaves it there. */
+    .editor textarea { height: 60vh; font-size: 16px; }
   }
 
   @media (width <= 380px) {
@@ -1012,5 +1021,31 @@
     textarea { resize: vertical; font-family: var(--mono); }
     p { margin: 0 0 var(--s-4); font-size: var(--text-sm); }
     .button { justify-self: start; }
+  }
+}
+
+/* The instructions editor: the file's own text, full width, with Save beside its name. */
+@layer components {
+  .editor {
+    display: grid; gap: var(--s-3);
+    .editor-head { display: flex; align-items: center; justify-content: space-between; gap: var(--s-5); }
+    label { font-weight: 500; }
+    .editor-path { color: var(--fg-3); font-size: var(--text-xs); overflow-wrap: anywhere; }
+    p { margin: 0 0 var(--s-3); a { color: var(--link); text-decoration: underline; } }
+    textarea {
+      width: 100%; min-width: 0; min-height: 16rem; height: min(70vh, 56rem);
+      padding: var(--s-5) var(--s-6); border: 1px solid var(--border); border-radius: var(--r-lg);
+      background: var(--surface); color: var(--fg); resize: vertical;
+      font-family: var(--mono); font-size: var(--text-sm); line-height: 1.6; tab-size: 4;
+    }
+  }
+  .editor-disk {
+    margin: 0 0 var(--s-6);
+    > summary { cursor: pointer; color: var(--fg-2); font-size: var(--text-xs); }
+    pre {
+      margin-top: var(--s-4); max-height: 20rem; overflow: auto; padding: var(--s-5) var(--s-6);
+      border: 1px solid var(--border); border-radius: var(--r-lg); background: var(--surface);
+      font-family: var(--mono); font-size: var(--text-xs); white-space: pre-wrap; overflow-wrap: anywhere;
+    }
   }
 }

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Home{% endblock %}
+{% block content %}
+<p class="crumbs"><a href="/workspaces">Workspaces</a> / <span aria-current="page">Home</span></p>
+{% call m.phead(now) %}Home{% if home and not home.ok %} {{ m.tag(home.status, home.summary) }}{% endif %}{% endcall %}
+
+{{ m.subtabs([
+  ('Overview', '/home', none, none),
+  ('Instructions', '/home/instructions', none, none),
+], '/home/instructions' if section == 'instructions' else '/home') }}
+
+{{ m.error(error, "The audit could not run") }}
+
+{% if section == 'instructions' %}
+{% call m.instructions_editor(editor, csrf) %}Every chat and job reads these, in every workspace. A workspace's own instructions add to them.{% endcall %}
+{% else %}
+<section aria-labelledby="shared-head">
+  <div class="shead"><h2 id="shared-head">Shared by every workspace</h2></div>
+  <div class="panel">
+    <dl class="kv">
+      <dt>Path</dt><dd><code>{{ path }}</code></dd>
+      <dt>Workspaces</dt><dd><a href="/workspaces">{{ workspace_count }} workspace{{ 's' if workspace_count != 1 }}</a></dd>
+      <dt>Knowledge</dt><dd><a href="/knowledge">Shared knowledge</a></dd>
+      <dt>Skills</dt><dd><a href="/skills">Home, workspace, and user skills</a></dd>
+    </dl>
+  </div>
+</section>
+
+{% if home %}
+<section aria-labelledby="audit-head">
+  <div class="shead"><h2 id="audit-head">Audit</h2>
+    {{ m.repair_hint(home.findings) }}
+    <span class="right{{ ' bad' if home.findings }}">{{ home.summary }}</span></div>
+  {% if home.findings %}
+  <div class="panel rows">{{ m.findings(home.findings) }}</div>
+  {% else %}
+  {{ m.empty("The home layout is intact.") }}
+  {% endif %}
+</section>
+{% endif %}
+{% endif %}
+{% endblock %}

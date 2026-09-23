@@ -29,12 +29,16 @@
 <a class="skip" href="#main">Skip to content</a>
 
 <aside class="sidebar">
+  {# Groups separate watching from setting up; the last group sits at the foot. #}
   <nav class="side-nav" aria-label="Sections">
-    <ul>
-      {% for label, href in nav %}
+    {% for group, links in nav_groups %}
+    {% if group %}<h2 class="nav-group">{{ group }}</h2>{% endif %}
+    <ul{% if loop.last %} class="nav-foot"{% endif %}>
+      {% for label, href in links %}
       <li>{{ nav_link(label, href) }}</li>
       {% endfor %}
     </ul>
+    {% endfor %}
   </nav>
   <p class="sidebar-version">Enso {{ version }}</p>
 </aside>
@@ -63,11 +67,14 @@
         <summary aria-controls="more-sections">{{ icon('more', 20) }}More{% if alarm is defined and alarm %}<span class="pip"><span class="visually-hidden">Health needs attention</span></span>{% endif %}</summary>
         <div class="more-panel" id="more-sections">
           <h2>More views</h2>
+          {% for group, links in nav_more_groups %}
+          {% if group %}<h3 class="nav-group">{{ group }}</h3>{% endif %}
           <ul>
-            {% for label, href in nav_more %}
+            {% for label, href in links %}
             <li>{{ nav_link(label, href) }}</li>
             {% endfor %}
           </ul>
+          {% endfor %}
         </div>
       </details>
     </li>

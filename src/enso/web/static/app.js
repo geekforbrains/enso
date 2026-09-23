@@ -142,6 +142,34 @@
     });
   }
 
+  // An editor warns before leaving with unsaved text, and Cmd/Ctrl+S saves it. A refused
+  // save renders text the file does not hold, so that form arrives marked dirty.
+  function setupEditor(form) {
+    var field = form.querySelector("textarea");
+    if (!field) return;
+    var saved = form.hasAttribute("data-dirty") ? null : field.value;
+    var submitting = false;
+    form.addEventListener("submit", function () {
+      submitting = true;
+    });
+    window.addEventListener("beforeunload", function (event) {
+      if (submitting || field.value === saved) return;
+      event.preventDefault();
+      event.returnValue = "";
+    });
+    field.addEventListener("keydown", function (event) {
+      if (!(event.metaKey || event.ctrlKey) || event.altKey || event.shiftKey) return;
+      if (event.key.toLowerCase() !== "s") return;
+      event.preventDefault();
+      if (typeof form.requestSubmit === "function") {
+        form.requestSubmit();
+      } else {
+        submitting = true;
+        form.submit();
+      }
+    });
+  }
+
   // -- Mobile navigation -------------------------------------------------------
 
   function setupMoreMenu(menu) {
@@ -221,6 +249,7 @@
     Array.prototype.slice.call(document.querySelectorAll("table[data-sortable]")).forEach(setupSortable);
     Array.prototype.slice.call(document.querySelectorAll("form[data-autosubmit]")).forEach(setupAutosubmit);
     Array.prototype.slice.call(document.querySelectorAll("form[data-confirm]")).forEach(setupConfirmation);
+    Array.prototype.slice.call(document.querySelectorAll("form[data-editor]")).forEach(setupEditor);
     Array.prototype.slice.call(document.querySelectorAll("[data-more-menu]")).forEach(setupMoreMenu);
     Array.prototype.slice.call(document.querySelectorAll("[data-hide-when-enhanced]")).forEach(function (element) {
       element.hidden = true;

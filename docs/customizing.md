@@ -11,6 +11,7 @@ and skills outside Enso, which Enso never changes.
 | `~/.enso/AGENTS.md` | Shared behaviour, preferences, and environment context |
 | `~/.enso/workspaces/<name>/AGENTS.md` | This workspace's purpose and rules |
 
+Edit them in any text editor or on the viewer's [Instructions](web.md#instructions) tabs.
 `CLAUDE.md` beside each is a symlink to `AGENTS.md`; keep it as a link. Enso initializes its
 home as an empty Git repository so provider discovery includes home instructions. It never
 commits there. [Workspaces](workspaces.md#how-they-reach-the-agent) owns provider-specific

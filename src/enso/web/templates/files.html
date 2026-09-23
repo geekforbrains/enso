@@ -5,7 +5,7 @@
 {% block content %}
 <p class="crumbs">
   <a href="/workspaces">Workspaces</a> /
-  <a href="/workspaces/{{ workspace|urlencode }}">{{ workspace }}</a> /
+  <a href="/workspaces/{{ workspace|urlencode }}/files">{{ workspace }}</a> /
   {% if crumbs %}<a href="{{ base }}/">{{ root }}</a>{% else %}<span aria-current="page">{{ root }}</span>{% endif %}
   {% for label, path in crumbs %}
   / {% if loop.last %}<span aria-current="page">{{ label }}</span>{% else %}<a href="{{ base }}/{{ path|urlencode }}/">{{ label }}</a>{% endif %}

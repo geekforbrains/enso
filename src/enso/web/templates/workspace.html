@@ -2,11 +2,37 @@
 {% import "_macros.html" as m %}
 {% import "_projects.html" as p %}
 {% block title %}Workspace {{ name }}{% endblock %}
+{% set base = '/workspaces/' ~ name|urlencode %}
 {% block content %}
 <p class="crumbs"><a href="/workspaces">Workspaces</a> / <span aria-current="page">{{ name }}</span></p>
 {% call m.phead(now) %}{{ name }}{% if workspace and not workspace.ok %} {{ m.tag(workspace.status, workspace.summary) }}{% endif %}{% endcall %}
+
+{{ m.subtabs([
+  ('Overview', base, none, none),
+  ('Instructions', base ~ '/instructions', none, none),
+  ('Files', base ~ '/files', none, none),
+], base if section == 'overview' else base ~ '/' ~ section) }}
+
 {{ m.error(error, "The audit could not run") }}
 
+{% if section == 'instructions' %}
+{% call m.instructions_editor(editor, csrf) %}Chats and jobs in this workspace read these after the <a href="/home/instructions">home instructions</a>.{% endcall %}
+
+{% elif section == 'files' %}
+<section aria-labelledby="files-head">
+  <div class="shead"><h2 id="files-head">Directories</h2>
+    <span class="right wide-only">what is on disk in the directories the agent is told to use</span></div>
+  <div class="cards">
+    {% for root in roots %}
+    <article class="card">
+      <h3>{% if root.is_dir %}<a href="{% if root.name == 'knowledge' %}/knowledge?scope=workspace%3A{{ name|urlencode }}{% else %}{{ base }}/files/{{ root.name }}/{% endif %}">{{ root.name }}/</a>{% else %}{{ root.name }}/ {{ m.tag('error', 'missing') }}{% endif %}</h3>
+      <p>{% if root.is_dir %}{{ root.entries }} file{{ 's' if root.entries != 1 }} · {{ root.bytes|bytes }}{% else %}not a directory{% endif %}</p>
+    </article>
+    {% endfor %}
+  </div>
+</section>
+
+{% else %}
 <section aria-labelledby="projects-head">
   <div class="shead"><h2 id="projects-head">Projects</h2><a class="right" href="/tasks?workspace={{ name|urlencode }}">All tasks</a></div>
   {{ m.error(projects_error, "Project task counts could not be read") }}
@@ -41,21 +67,9 @@
   {{ m.empty("The layout is intact and nothing collides.") }}
   {% endif %}
   {% if home and not home.ok %}
-  <p class="state warning">The home itself fails its audit ({{ home.summary }}); every workspace depends on it. <a href="/workspaces">See the home findings</a>.</p>
+  <p class="state warning">The home itself fails its audit ({{ home.summary }}); every workspace depends on it. <a href="/home">See the home findings</a>.</p>
   {% endif %}
 </section>
 {% endif %}
-
-<section aria-labelledby="files-head">
-  <div class="shead"><h2 id="files-head">Files</h2>
-    <span class="right wide-only">what is on disk in the directories the agent is told to use</span></div>
-  <div class="cards">
-    {% for root in roots %}
-    <article class="card">
-      <h3>{% if root.is_dir %}<a href="{% if root.name == 'knowledge' %}/knowledge?scope=workspace%3A{{ name|urlencode }}{% else %}/workspaces/{{ name|urlencode }}/files/{{ root.name }}/{% endif %}">{{ root.name }}/</a>{% else %}{{ root.name }}/ {{ m.tag('error', 'missing') }}{% endif %}</h3>
-      <p>{% if root.is_dir %}{{ root.entries }} file{{ 's' if root.entries != 1 }} · {{ root.bytes|bytes }}{% else %}not a directory{% endif %}</p>
-    </article>
-    {% endfor %}
-  </div>
-</section>
+{% endif %}
 {% endblock %}

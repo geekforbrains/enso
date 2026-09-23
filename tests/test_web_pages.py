@@ -261,21 +261,39 @@ async def test_workspaces_list_and_detail(client: TestClient, home: Home) -> Non
     # Search still reaches a workspace by a binding or job the row does not show.
     assert "slack:dm:u1" in body and "nightly" in body
 
+    # The home leads the list; its findings live on its own page.
+    assert 'href="/home"' in body and "shared by every workspace" in body
+
     detail = await page(client, "/workspaces/lonely")
     assert title(detail) == "Workspace lonely · Enso"
-    assert 'href="/knowledge?scope=workspace%3Alonely"' not in detail
-    assert 'href="/workspaces/lonely/files/work/"' in detail
-    assert 'href="/workspaces/lonely/files/drafts/"' not in detail
-    assert 'href="/workspaces/lonely/files/uploads/"' in detail
+    (tabs,) = Document(detail).root.find("nav", "subtabs")
+    assert [
+        (link.text, link.attrs["href"], "aria-current" in link.attrs) for link in tabs.find("a")
+    ] == [
+        ("Overview", "/workspaces/lonely", True),
+        ("Instructions", "/workspaces/lonely/instructions", False),
+        ("Files", "/workspaces/lonely/files", False),
+    ]
     assert "untouched template" in detail and 'href="/skills?workspace=lonely"' in detail
     assert "nothing is bound to this workspace" in detail
-    assert "2.0 KB" in await page(client, "/workspaces/default")
-    os.rmdir(home.paths.workspace("lonely") / "uploads")
-    detail = await page(client, "/workspaces/lonely")
-    assert "uploads/ is missing" in detail and "missing</span>" in detail
-    assert "repairable with" in detail
+    assert 'href="/workspaces/lonely/files/work/"' not in detail  # directories have a tab
 
+    directories = await page(client, "/workspaces/lonely/files")
+    assert 'href="/knowledge?scope=workspace%3Alonely"' not in directories
+    assert 'href="/workspaces/lonely/files/work/"' in directories
+    assert 'href="/workspaces/lonely/files/drafts/"' not in directories
+    assert 'href="/workspaces/lonely/files/uploads/"' in directories
+    assert "2.0 KB" in await page(client, "/workspaces/default/files")
+    os.rmdir(home.paths.workspace("lonely") / "uploads")
+    directories = await page(client, "/workspaces/lonely/files")
+    assert "missing</span>" in directories
+    assert "tag-error" in directories.split('class="subtabs"')[0]  # the verdict heads every tab
+    detail = await page(client, "/workspaces/lonely")
+    assert "uploads/ is missing" in detail and "repairable with" in detail
+
+    assert "Not found" in await page(client, "/workspaces/lonely/history", 404)
     assert "Not found" in await page(client, "/workspaces/nope", 404)
+    assert "Not found" in await page(client, "/workspaces/nope/instructions", 404)
     assert "Not found" in await page(client, "/workspaces/Bad%20Name", 404)
     assert views.workspace_model(home.paths, "..") is None  # clients normalise the URL
     assert views.workspace_model(home.paths, "../default") is None
@@ -491,8 +509,8 @@ async def test_file_browser_rejects_every_escape(
     assert "symlink" in listing and "leak" in listing  # visible, since the agent sees it
     inside = await page(client, "/workspaces/default/files/knowledge/inside")
     assert "&lt;b&gt;not html&lt;/b&gt;" in inside  # a link that stays inside is fine
-    detail = await page(client, "/workspaces/default")
-    assert "drafts" in detail
+    directories = await page(client, "/workspaces/default/files")
+    assert "drafts" in directories
 
 
 # -- Skills ---------------------------------------------------------------------

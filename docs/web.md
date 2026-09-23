@@ -1,9 +1,9 @@
 # Web viewer
 
-The optional web UI shows configuration, files, tasks, and execution history. Browsing is
-read-only; **Secrets** also creates and deletes encrypted secrets. There is no authentication.
-Keep it on localhost or behind authenticated private access: pages expose private content,
-and access permits secret management. See [Access](#access).
+The optional web UI shows configuration, files, tasks, and execution history, and edits
+instructions and secrets. There is no authentication: anyone who can reach it can read private
+content and change what agents are told. Keep it on localhost or a private network such as
+Tailscale. See [Access](#access).
 
 ## Running it
 
@@ -20,8 +20,8 @@ enso web uninstall                 # stop and remove automatic startup
 ```
 
 The viewer runs separately from `enso serve`, reading files and `enso.db` even when the
-agent service is stopped. Browsing opens the database read-only; secret operations use
-short transactions and respect maintenance admission. Without the optional dependencies,
+agent service is stopped. Browsing opens the database read-only. Writes respect maintenance
+admission, and secret operations use short transactions. Without the optional dependencies,
 `status`, `stop`, and `uninstall` still work; `start` and `install` explain the missing extra.
 
 Standalone `start` logs to `~/.enso/web.log`. `install` adds a launchd/systemd user service
@@ -41,8 +41,9 @@ special files; `status` and `stop` do not create an absent file.
 
 ## Layout
 
-Desktop uses a left sidebar, with the current view marked and the running Enso version at
-the bottom. There is no top bar. Pages show their name and render time, with no subtitle;
+Desktop uses a left sidebar with the current view marked. Views to watch and read come first,
+then **Setup** (Workspaces, Jobs, Skills, Secrets); Health sits at the foot above the running
+Enso version. There is no top bar. Pages show their name and render time, with no subtitle;
 they do not refresh automatically.
 
 | View | Sections |
@@ -50,23 +51,25 @@ they do not refresh automatically.
 | [Today](#today) `/today` | Schedule · Activity · Reliability |
 | [Tasks](#tasks) `/tasks` | Project navigation, workflow, and grouped board |
 | [Heartbeats](#heartbeats) `/heartbeats` | Current · Previous; each beat has Overview · History · Runs |
-| [Jobs](#jobs) `/jobs` | Each job has Overview · History |
 | [Runs](#runs) `/runs` | Acted · Failed · All |
 | [Knowledge](#knowledge) `/knowledge` | Browse · All notes |
-| [Workspaces](#workspaces) `/workspaces` | Workspaces · Skills |
+| [Workspaces](#workspaces) `/workspaces` | Home, then workspaces; each has Overview · Instructions, and workspaces add Files |
+| [Jobs](#jobs) `/jobs` | Each job has Overview · History |
+| [Skills](#skills) `/skills` | Skills grouped by scope |
 | [Secrets](#secrets) `/secrets` | Add secret (default) · Secrets |
 | [Health](#health) `/health` | Doctor · Log |
 
-`/` redirects to `/today`. `/skills` belongs to Workspaces. Filters sit in one row above
+`/` redirects to `/today`. `/home` belongs to Workspaces. Filters sit in one row above
 lists, with descriptive first options such as `Any job`. Search grows to fill the row;
 `/` focuses it. In-place filters update the visible count. Server-filtered lists state
 their scope beside the count. Empty lists show one sentence.
 
 At 820px and below, navigation becomes **Today, Tasks, Heartbeats, Runs, More**. More contains
-the remaining views, highlights its active destination, and carries the Health attention
-indicator. It uses native disclosure; JavaScript adds focus management, Escape, and outside
-click dismissal. Section tabs become segmented controls. Filters wrap, with equal-width
-selects above the search field. The layout respects phone safe areas and works at 320px.
+the remaining views in the same groups, highlights its active destination, and carries the
+Health attention indicator. It uses native disclosure; JavaScript adds focus management,
+Escape, and outside click dismissal. Section tabs become segmented controls. Filters wrap,
+with equal-width selects above the search field. The layout respects phone safe areas and
+works at 320px.
 
 On iPhone, Share → Add to Home Screen installs Enso with its icon and opens Today without
 Safari's address bar. Use the address you intend to keep accessing. Tap the current bottom
@@ -149,6 +152,12 @@ the item and consequence. Cancel sends no request. Attach the submit guard befor
 `data-confirm-trigger` and hiding `data-confirm-fallback`. Without JavaScript, a disclosure
 shows the warning, submit button, and Cancel link beneath the name; opening it never submits.
 Keep the protected POST and redirect, with no inline handlers or custom modal.
+
+Editors are plain forms: the file name with **Save** beside it, the path, and a labelled
+monospace textarea. The form carries the revision it loaded. A save is refused if the file
+has changed since, keeping the submitted text, showing the current file in a collapsed
+disclosure, and adopting its revision so saving again deliberately replaces it. JavaScript
+only warns before leaving unsaved text and adds Cmd/Ctrl+S. Saved text uses LF line breaks.
 
 Successful writes redirect with a concise status message. Validation errors retain non-secret
 input; secret fields always return empty. Verify action UI in a browser at desktop and phone
@@ -279,8 +288,15 @@ creates no persistent index or missing directories and never changes notes or me
 
 ### Workspaces
 
-Workspace rows show their [audit](workspaces.md) verdict. Each detail page shows projects,
-workflow previews, unfinished counts, task links, bindings, jobs, uploads, and audit findings.
+The list starts with **Home**, whose instructions, skills, and knowledge every workspace
+shares, then workspace rows with their [audit](workspaces.md) verdict. Each page shows a
+failing verdict in its heading and has these tabs:
+
+| Tab | Home `/home` | Workspace `/workspaces/<name>` |
+| --- | --- | --- |
+| Overview | Path, workspace count, shared knowledge and skills, home audit findings | Projects, workflow previews, unfinished counts, task links, bindings, jobs, uploads, and audit findings |
+| Instructions | `~/.enso/AGENTS.md` | The workspace's `AGENTS.md` |
+| Files | None | Content roots and the file browser |
 
 The file browser supports `work/`, `uploads/`, and retained `knowledge/` and `drafts/` roots;
 absent optional roots are omitted. Knowledge cards open their scope in Knowledge. Workspace
@@ -290,6 +306,17 @@ keeps only relative, `http`, `https`, and `mailto` links.
 
 Workspaces and their parent container must be real directories. Browsing and summaries cannot
 escape the permitted roots, including through symlinks; rejected paths return 404.
+
+### Instructions
+
+**Instructions** edits `AGENTS.md` in place; [Customizing](customizing.md#instructions-agentsmd)
+owns what belongs there. Saving replaces the whole file atomically, keeping its permissions
+and the `CLAUDE.md` link. A missing file is created on save with mode `0644`. Changes made on
+disk or by an agent after the page loaded are never silently overwritten; see
+[Forms and actions](#forms-and-actions). A symbolic-link, special, non-UTF-8, or
+larger-than-128-KiB file is shown as an error without a form. A save over 128 KiB keeps the text
+for trimming. Managed updates no longer refresh an edited home file; see
+[the home-level file](customizing.md#the-home-level-file).
 
 ### Skills
 
@@ -395,12 +422,12 @@ Saved values never appear in responses and cannot be revealed or edited. Duplica
 fails; replacement requires deleting the name and adding it again. Deletion uses native
 confirmation, or an inline Delete/Cancel disclosure without JavaScript.
 
-Only `POST /secrets` and `POST /secrets/{name}/delete` write. Creation redirects to an empty
-Add secret form; deletion and Cancel return to the saved list. Success shows **Secret added.**
-or **Secret deleted.** Errors stay in the relevant tab; the add form retains the name but
-clears the value. Both actions use the [CLI](cli.md#secrets)'s store and first-use key creation,
-without requiring the chat service. [Configuration](configuration.md#secrets) owns key backup
-and restore.
+Secrets change only through `POST /secrets` and `POST /secrets/{name}/delete`. Creation
+redirects to an empty Add secret form; deletion and Cancel return to the saved list. Success
+shows **Secret added.** or **Secret deleted.** Errors stay in the relevant tab; the add form
+retains the name but clears the value. Both actions use the [CLI](cli.md#secrets)'s store and
+first-use key creation, without requiring the chat service.
+[Configuration](configuration.md#secrets) owns key backup and restore.
 
 ## Access
 

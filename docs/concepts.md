@@ -37,7 +37,7 @@ input, and preserves user data, but is not a sandbox. See
 | **Table** | A registered user SQLite table in `enso.db` |
 | **Message** | An out-of-band send recorded for later conversation context |
 | **Secret** | An encrypted named value supplied to selected commands or jobs |
-| **Viewer** | The optional web UI for browsing Enso and managing secrets |
+| **Viewer** | The optional web UI for browsing Enso and editing instructions and secrets |
 
 ## Home
 

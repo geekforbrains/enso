@@ -5,8 +5,16 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- The web viewer edits home and workspace `AGENTS.md` on new **Instructions** tabs. A save
+  never overwrites changes made on disk or by an agent after the page loaded.
+
 ### Changed
 
+- The web sidebar groups Workspaces, Jobs, Skills, and Secrets under **Setup**, with Health at
+  its foot. Skills has its own entry, the home has a page under Workspaces, and workspace pages
+  split into Overview, Instructions, and Files tabs.
 - Knowledge's **In this folder** panel starts collapsed and remembers the browser's choice,
   leaving more room for reading. On smaller screens it opens above the note.
 
