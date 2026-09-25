@@ -60,12 +60,7 @@
 
 {% if workflow %}
 <div class="shead" id="workflow"><h2>Workflow history</h2><span class="right">{{ workflow|length }} transaction{{ 's' if workflow|length != 1 }}, newest first</span></div>
-{% for entry in workflow %}{{ w.transaction(entry, include_hooks=False) }}{% endfor %}
-{% endif %}
-
-{% if lifecycle %}
-<div class="shead"><h2>Lifecycle scripts</h2><span class="right">{{ lifecycle|length }} event{{ 's' if lifecycle|length != 1 }}</span></div>
-{% for event in lifecycle %}{{ w.lifecycle(event) }}{% endfor %}
+{% for entry in workflow %}{{ w.transaction(entry) }}{% endfor %}
 {% endif %}
 
 <div class="shead"><h2>Spec</h2></div>
@@ -95,36 +90,72 @@
   {% endif %}
 </div>
 
-{# One event's cells. A row with a message folds: it adds the message's words as one line
-   and a chevron, and the row itself opens instead of linking to the run. #}
-{% macro event_cells(entry, fold=False) -%}
-{% set event = entry.event %}
-    <span class="at">{{ m.time(event.created_at) }}</span>
-    <span class="pin {{ entry.tone }}"></span>
-    <span class="body">
-      <span class="title">{{ entry.label }} <span class="muted">by {{ event.actor }}{% if entry.run == 'live' %} · run <span class="mono">{{ event.run_id }}</span>{% elif entry.run == 'operator' %} · Operator verification{% elif entry.run == 'pruned' %} · run pruned{% endif %}</span></span>
-      {% if fold %}<span class="message">{{ entry.preview }}</span>{% endif %}
-    </span>
-    <span class="trail">{{ event.created_at|ago }}{% if fold %}{{ icon('chevron-right', 14) }}{% endif %}</span>
+{# The timeline reads as stage visits: a header naming the stage and the job that worked it,
+   then one folding row per thing that happened. The icon says who acted and its colour how
+   it went; every trail has the same three slots, so tags, values, and chevrons line up. #}
+{% macro source(kind, tone, small=False) -%}
+{% set sources = {'person': 'Person', 'agent': 'Agent', 'enso': 'Enso', 'script': 'Script'} %}
+<span class="src {{ tone }}{{ ' small' if small }}" title="{{ sources[kind] }}">{{ icon(kind, 11 if small else 13) }}<span class="visually-hidden">{{ sources[kind] }}:</span></span>
 {%- endmacro %}
-<div class="shead"><h2>Timeline</h2><span class="right">{{ timeline|length }} event{{ 's' if timeline|length != 1 }}, newest first</span></div>
+{% macro result(item) -%}
+{% if item %}<span class="tag{{ ' tag-' ~ item[0] if item[0] != 'muted' }}">{{ item[1] }}</span>{% endif %}
+{%- endmacro %}
+{% macro trail(tag, value, chevron=False) -%}
+<span class="trail slots"><span>{{ result(tag) }}</span><span>{{ value }}</span><span>{% if chevron %}{{ icon('chevron-right', 14) }}{% endif %}</span></span>
+{%- endmacro %}
+<div class="shead"><h2>Timeline</h2><span class="right">{{ events }} event{{ 's' if events != 1 }}, oldest first</span></div>
 {% if timeline %}
-<div class="panel rows timeline">
-  {% for entry in timeline %}
-  {% set event = entry.event %}
-  {% if event.message %}
-  <details class="fold task-event">
-    <summary class="row">{{ event_cells(entry, fold=True) }}</summary>
-    <div class="task-event-body">
-      {% if entry.message %}<div class="markdown">{{ entry.message }}</div>{% else %}<pre class="output bare" tabindex="0">{{ event.message }}</pre>{% endif %}
-      <p class="task-event-meta">{% if entry.run == 'live' %}<a href="/runs/{{ event.run_id|urlencode }}">Open run <span class="mono">{{ event.run_id }}</span></a> · {% endif %}<time datetime="{{ event.created_at|iso }}">{{ event.created_at|when }}</time></p>
-    </div>
-  </details>
-  {% elif entry.run == 'live' %}
-  <a class="row" href="/runs/{{ event.run_id|urlencode }}">{{ event_cells(entry) }}</a>
-  {% else %}
-  <div class="row still">{{ event_cells(entry) }}</div>
-  {% endif %}
+<div class="panel timeline">
+  {% for section in timeline %}
+  <div class="stage-visit">
+    <span class="at">{{ m.time(section.at) }}</span>
+    {{ source(section.source, 'muted') }}
+    <span class="body"><span class="chip">{{ section.stage }}</span>{% if section.job %}<span class="job">{{ section.job }}</span>{% endif %}</span>
+    {{ trail(none, section.duration) }}
+  </div>
+  {% for entry in section.entries %}
+  <div class="task-event">
+    <details class="fold">
+      <summary class="row">
+        <span class="at">{{ m.time(entry.at) }}</span>
+        {{ source(entry.source, entry.tone) }}
+        <span class="body">
+          <span class="title">{{ entry.title }}</span>
+          <span class="who">{{ entry.who }}</span>
+          {% if entry.tag %}<span class="inline-tag">{{ result(entry.tag) }}</span>{% endif %}
+          <span class="message">{{ entry.preview }}</span>
+        </span>
+        {{ trail(entry.tag, entry.value, chevron=True) }}
+      </summary>
+      <div class="task-event-body">
+        {% if entry.message %}<div class="markdown">{{ entry.message }}</div>{% elif entry.text %}<pre class="output bare" tabindex="0">{{ entry.text }}</pre>{% endif %}
+        <p class="task-event-meta">
+          {%- if entry.actor %}<span>Recorded as <code>{{ entry.actor }}</code></span>{% endif %}
+          {%- if entry.run == 'live' %}<a href="/runs/{{ entry.run_id|urlencode }}">Open run <span class="mono">{{ entry.run_id }}</span></a>
+          {%- elif entry.run == 'operator' %}<span>Operator verification <span class="mono">{{ entry.run_id }}</span></span>
+          {%- elif entry.run == 'pruned' %}<span>Run <span class="mono">{{ entry.run_id }}</span> pruned</span>{% endif %}
+          {%- if entry.record %}<span>{{ entry.record[0] }} <code>{{ entry.record[1] }}</code></span>{% endif %}
+          <time datetime="{{ entry.at|iso }}">{{ entry.at|when }}</time>
+        </p>
+      </div>
+    </details>
+    {% if entry.steps %}
+    <ol class="steps" aria-label="How Enso judged this handoff">
+      {% for step in entry.steps %}
+      <li class="step">
+        <span class="guide"></span>
+        <span class="body">
+          <span class="step-head">{{ source(step.source, step.tone, small=True) }}<span class="title">{{ step.title }}</span></span>
+          <span class="who">{{ step.who }}</span>
+          <span class="detail">{{ step.detail }}</span>
+        </span>
+        {{ trail(step.tag, step.value) }}
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </div>
+  {% endfor %}
   {% endfor %}
 </div>
 {% else %}

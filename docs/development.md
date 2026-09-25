@@ -19,7 +19,7 @@ Product behaviour belongs in its owning page under `docs/`, starting with
 | `layout.py`, `locks.py` | Home/workspace entries and hardened advisory locks; neither imports another Enso module |
 | `releases.py` | Manifests, downloads, and release environments; standard library only because the builder embeds it in the installer |
 | `development.py` | Editable refresh and manual migrations, sharing admission, ownership, and snapshots with updates |
-| `web/` | `server.py` routes, `filters.py` presentation, `tasks.py`/`views.py` page models, `common.py` shared state, `heartbeat.py` bounded reads, `files.py` safe browsing; shared helpers never import page models |
+| `web/` | `server.py` routes, `filters.py` presentation, `tasks.py`/`views.py` page models, `timeline.py` the task timeline, `common.py` shared state, `heartbeat.py` bounded reads, `files.py` safe browsing; shared helpers never import page models |
 | `bundled/` | Shipped home content, workspace/job templates, and CLI resources; not instructions for this checkout |
 | `tests/` | Tests and shared `conftest.py` fixtures |
 | `docs/` | Product and development contracts; one owning page per fact |

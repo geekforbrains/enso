@@ -638,42 +638,129 @@
   details.panel h3, .beat-event-body h3 { padding: var(--s-5) var(--s-6) 0; }
   /* The chevron trails the event number or age: an event's status dot owns the column a
      fold normally puts its chevron in, and the dot is the more useful of the two. */
-  :is(.beat-event, .task-event) > summary > .trail {
+  .beat-event > summary > .trail {
     display: flex; align-items: center; justify-content: flex-end; gap: var(--s-3);
   }
   .beat-event-body .range { padding: 0 var(--s-6) var(--s-4); margin: 0; }
 
   /* -- Task timeline ---------------------------------------------------------
-     Read top down, so time, dot, and age stay on an event's first line instead of
-     centring on whatever follows it. The padding is what centring gave a one-line row,
-     so a short event keeps the height of every other list's rows. A message folds to its
-     words on one line (two in a narrow list); opening the event hides that preview and
-     shows the rendered message under the title, which unclips to name the actor in full. */
+     Stage visits, oldest first. A visit's header names the stage and the job that worked
+     it; each event under it is a fold whose summary is the row. The dot column holds who
+     acted instead of a dot: the icon's shape is the source (person, agent, Enso, script)
+     and its colour the state a dot would carry. Rows read top down, so time, icon, and
+     trail stay on the first line. Every trail has the same three slots, tag, value, and
+     chevron, each a fixed width from the right, so they line up down the whole list
+     whether or not a row fills them. A handoff's checks and Enso's decision follow it as
+     steps that reuse the row's columns, so their source and detail start under its own. */
   .timeline {
-    .row {
-      align-items: start; padding-block: calc((44px - var(--lh-sm)) / 2);
-      .pin { margin-top: calc((var(--lh-sm) - 8px) / 2); }
-      .trail { align-self: start; }
+    --row-cols: 56px 24px minmax(0, 1fr) auto;
+    > * + * { border-top: 1px solid var(--border); }
+    .src {
+      --tone: var(--fg-3); --tone-bg: var(--surface-2);
+      display: grid; place-items: center; width: 24px; height: 24px; flex: none;
+      border-radius: 50%; color: var(--tone); background: var(--tone-bg);
+      border: 1px solid color-mix(in oklab, var(--tone) 28%, transparent);
+      &.ok { --tone: var(--ok); --tone-bg: color-mix(in oklab, var(--ok-fill) 20%, var(--surface)); }
+      &.running { --tone: var(--running); --tone-bg: color-mix(in oklab, var(--running-fill) 14%, var(--surface)); }
+      &.warning { --tone: var(--warning); --tone-bg: var(--warning-bg); }
+      &.error { --tone: var(--error); --tone-bg: var(--error-bg); }
+      &.small { width: 18px; height: 18px; }
+    }
+    /* A fold places and turns every icon in its summary as its own chevron; a source icon
+       stays centred in its circle and never turns. */
+    details.fold > summary .src .icon { grid-column: 1; transform: none; }
+    .trail.slots {
+      grid-column: 4; display: grid; grid-template-columns: auto 52px 14px; column-gap: var(--s-4);
+      align-items: center; justify-items: end; align-self: start; min-height: 24px;
+      font-size: var(--text-xs); color: var(--fg-3); white-space: nowrap; font-variant-numeric: tabular-nums;
+      .icon { transition: transform 150ms ease; }
+    }
+    .at { padding-left: var(--s-6); font-family: var(--mono); font-size: var(--text-xs); line-height: 24px; color: var(--fg-3); }
+
+    .stage-visit {
+      display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
+      align-items: center; padding: var(--s-4) var(--s-6) var(--s-4) 0; background: var(--surface-2);
+      .src { background: var(--surface); }
+      .body { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--s-1) var(--s-5); min-width: 0; }
+      .chip { background: var(--surface); color: var(--fg); font-weight: 600; border: 1px solid var(--border); }
+      .job { font-size: var(--text-xs); color: var(--fg-2); }
+      .trail.slots { color: var(--fg-2); }
+    }
+
+    details.fold > summary.row {
+      align-items: start; padding-block: var(--s-5);
+      .body { padding-top: 3px; min-width: 0; }
+      .title { font-weight: 500; }
+      .who { font-family: var(--sans); font-size: var(--text-xs); color: var(--fg-3); }
+      .inline-tag { display: none; }
       .message {
         display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
         overflow: hidden; white-space: normal;
       }
+      .message:empty { display: none; }
     }
-    .task-event[open] > summary {
+    details.fold[open] > summary {
       border-bottom: 0;
       .message { display: none; }
       .title { white-space: normal; }
+      .trail.slots .icon { transform: rotate(90deg); }
     }
+
+    .steps { padding: 0 0 var(--s-4); margin: calc(-1 * var(--s-3)) 0 0; list-style: none; }
+    .step {
+      display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
+      align-items: start; padding: 3px var(--s-6) 3px 0; font-size: var(--text-xs);
+      .guide { grid-column: 2; justify-self: center; align-self: stretch; width: 1px; margin-block: -3px; background: var(--border-2); }
+      &:last-child .guide { margin-bottom: 9px; }
+      .body { grid-column: 3; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-4); }
+      .step-head { display: flex; align-items: center; gap: var(--s-4); min-width: 0; }
+      .title { font-weight: 500; }
+      .who { color: var(--fg-3); }
+      .detail { flex-basis: 100%; padding-left: 26px; color: var(--fg-2); overflow-wrap: anywhere; }
+      .detail:empty { display: none; }
+      .trail.slots { min-height: 18px; .tag { line-height: 16px; } }
+    }
+
+    /* The title, source, and message take fixed columns from 640px, as every event row does;
+       a step's badge and name fill the title's track so its source lands under the row's. */
     @container (inline-size > 640px) {
-      .row { padding-block: calc((40px - var(--lh-sm)) / 2); }
-      .row .message {
-        display: block; flex: 1 1 0; min-width: 0; margin-top: 0;
-        white-space: nowrap; text-overflow: ellipsis;
+      details.fold > summary.row {
+        padding-block: var(--s-4);
+        .body { display: flex; align-items: baseline; gap: var(--s-6); }
+        .title { flex: 0 0 200px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .who { flex: 0 0 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .message { display: block; flex: 1 1 0; min-width: 0; margin-top: 0; white-space: nowrap; text-overflow: ellipsis; }
+        .message:empty { display: block; }
       }
-      .task-event[open] > summary .title { flex: 1 1 auto; }
+      details.fold[open] > summary .message { display: block; visibility: hidden; }
+      .step {
+        .body { flex-wrap: nowrap; gap: var(--s-6); }
+        .step-head { flex: 0 0 200px; }
+        .step-head .title { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .who { flex: 0 0 160px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .detail { flex: 1 1 0; min-width: 0; padding-left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      }
+    }
+    /* Narrower, a row's tag moves beside its source and a step's result wraps under it. */
+    @container (inline-size <= 640px) {
+      details.fold > summary.row {
+        .who { display: inline; }
+        .inline-tag { display: inline-block; margin-left: var(--s-3); vertical-align: 1px; .tag { line-height: 16px; } }
+        .trail.slots > :first-child .tag { display: none; }  /* the slot stays, empty */
+      }
+      .step {
+        .guide { grid-row: 1 / span 2; }
+        .body { grid-column: 3 / -1; }
+        .detail {
+          display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+          overflow: hidden;
+        }
+        .trail.slots { grid-column: 3 / -1; display: flex; gap: var(--s-4); justify-content: flex-start; padding-left: 26px; }
+        .trail.slots > :empty { display: none; }
+      }
     }
   }
-  /* The message starts where the title does, so the dot column still reads down the list. */
+  /* The message starts where the title does, so the icon column still reads down the list. */
   .task-event-body {
     display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
     padding: 0 var(--s-6) var(--s-6) 0;
@@ -682,7 +769,9 @@
     .output { padding: 0; }
   }
   .task-event-meta {
+    display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5);
     margin-top: var(--s-4); font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--fg-3);
+    code { color: var(--fg-2); }
   }
 
   /* -- Prose (Markdown files) ----------------------------------------------- */
@@ -912,8 +1001,10 @@
       > svg { grid-column: 2 / -1; grid-row: 2; height: 18px; }
       > svg.spark { display: none; }
     }
-    /* The job names are the first thing with nowhere to go on a narrow screen. */
+    /* The job names are the first thing with nowhere to go on a narrow screen. A timeline's
+       source stays: it is the only place a row says which person or command acted. */
     details.fold > summary .who { display: none; }
+    .timeline details.fold > summary .who { display: inline; }
     .kv { grid-template-columns: 6.5rem minmax(0, 1fr); }
     .verdict .go { display: none; }
 

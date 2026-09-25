@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
+from conftest import load_job, write_job
 
-from enso import db, tasks, workflows
+from enso import db, runs, tasks, workflows
 from enso.config import Config, Paths, Stage
 from enso.tasks import TaskError
 
@@ -235,6 +237,44 @@ def test_take_is_one_compare_and_set_under_a_race(enso_home: Paths, project_conf
     stored = tasks.list_tasks(enso_home, claimed=True)
     assert all(task.claim_actor == "job:t" and task.claim_at for task in stored)
     assert "taken" in kinds(enso_home, "EN-004")
+
+
+def test_take_keeps_what_the_run_executes_on_the_event(
+    enso_home: Paths, project_config: Config
+) -> None:
+    """Run rows are pruned; the ``taken`` event keeps the kind and model for the timeline."""
+    write_job(enso_home, "dev-todo")
+    run_id = runs.start(
+        enso_home, load_job(enso_home, project_config, "dev-todo"), "manual", effort="high"
+    )
+    add(enso_home, project_config)
+    tasks.take(enso_home, project_config, "EN", "triage", run_id=run_id, actor="job:dev:todo")
+    add(enso_home, project_config, "No run row")
+    tasks.take(enso_home, project_config, "EN", "triage", run_id="gone", actor="job:dev:todo")
+    assert tasks.events(enso_home, "EN-001")[0].payload == {
+        "stage": "triage",
+        "execution": {"kind": "agent", "provider": "claude", "model": "opus", "effort": "high"},
+    }
+    assert tasks.events(enso_home, "EN-002")[0].payload == {"stage": "triage"}
+
+
+def test_a_chat_sender_s_name_is_kept_beside_their_actor(
+    enso_home: Paths, project_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The actor stays the id the guards use; the name is only for reading the timeline."""
+    monkeypatch.setenv("ENSO_ORIGIN_TRANSPORT", "slack")
+    monkeypatch.setenv("ENSO_ORIGIN_USER_ID", "U1")
+    monkeypatch.setenv("ENSO_ORIGIN_USER_NAME", "Gavin\u200b")
+    actor = tasks.actor_from_env(os.environ)
+    task = tasks.create(enso_home, project_config, "EN", "From chat", actor=actor)
+    created = tasks.events(enso_home, task.ref)[0]
+    assert (created.actor, created.payload) == ("slack:U1", {"actor_name": "Gavin"})
+    # Someone else's event written from the same process does not borrow the name.
+    note = tasks.note(enso_home, task.ref, actor=USER, run_id=None, message="terminal")
+    assert note.payload == {"attention": False}
+    monkeypatch.setenv("ENSO_JOB", "dev:todo")  # a job run is never the chat sender
+    note = tasks.note(enso_home, task.ref, actor=actor, run_id=None, message="from a job")
+    assert "actor_name" not in note.payload
 
 
 def test_take_picks_priority_then_age_and_respects_stages(

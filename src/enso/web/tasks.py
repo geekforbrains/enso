@@ -9,19 +9,19 @@ from __future__ import annotations
 import os
 import re
 import subprocess
-from collections.abc import Mapping
+from collections.abc import Container, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from pathlib import Path
 from typing import Any
 
-from markupsafe import Markup
-
-from .. import db, formatting, tasks, workflows, worktrees
+from .. import db, slack_cache, tasks, workflows, worktrees
 from ..config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 from ..jobs import Job, load_jobs
-from . import common, files
+from . import common, files, timeline
+from .timeline import operator_verification as _operator_verification
+from .timeline import run_kind as _run_kind
 
 # The board reads top to bottom: what needs a person first, then what the agents hold,
 # then what is waiting, then what is finished. Each entry is a group's key, its heading,
@@ -48,8 +48,6 @@ DONE_WINDOW = timedelta(days=7)  # the count line says this week's finishes; the
 DONE_LIMIT = 200
 GIT_TIMEOUT = 5.0
 _STAGE_NAME = re.compile(r"[a-z][a-z0-9-]{0,23}")
-# A folded event shows one line of its message (two on a phone); the rest is never drawn.
-PREVIEW_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -68,35 +66,6 @@ class TaskGroup:
     label: str
     rows: list[TaskRow]
     note: str = ""  # a qualifier the heading adds after the count
-
-
-@dataclass(frozen=True)
-class TimelineEntry:
-    """One event as a row: a label for what happened, and whether its run can be opened.
-
-    A message folds: the row shows its words as plain text, and opening it shows the
-    rendered Markdown, or ``message`` is ``None`` and the page shows the text as recorded.
-    """
-
-    event: tasks.TaskEvent
-    label: str
-    tone: str
-    run: str | None  # ``operator``, or ``live``/``pruned`` provider execution
-    preview: str = ""
-    message: Markup | None = None
-
-
-def _operator_verification(run_id: str | None) -> bool:
-    """Manual checks have an execution ID but never create a provider run row."""
-    return bool(run_id and re.fullmatch(r"manual-[0-9a-f]{32}", run_id))
-
-
-def _run_kind(run_id: str | None, live: set[str]) -> str | None:
-    if run_id is None:
-        return None
-    if _operator_verification(run_id):
-        return "operator"
-    return "live" if run_id in live else "pruned"
 
 
 def _project_of(config: Config | None, task: tasks.Task) -> ProjectConfig | None:
@@ -281,58 +250,35 @@ def _tasks_empty(project: str | None, stage: str | None, q: str, workspace: str 
     return f"No tasks {' '.join(narrowed)}." if narrowed else "No tasks yet."
 
 
-def _existing_runs(paths: Paths, ids: list[str]) -> set[str]:
-    """Which of these run ids still have a row; task events outlive pruned runs."""
+def _existing_runs(paths: Paths, ids: list[str]) -> dict[str, dict[str, Any]]:
+    """The executions of these run ids that still have a row; task events outlive pruned runs."""
     if not ids:
-        return set()
+        return {}
     with db.reader(paths) as con:
         rows = con.execute(
-            f"SELECT id FROM runs WHERE id IN ({', '.join('?' for _ in ids)})", ids
+            f"SELECT id, {', '.join(tasks.RUN_EXECUTION)} FROM runs "
+            f"WHERE id IN ({', '.join('?' for _ in ids)})",
+            ids,
         ).fetchall()
-    return {row["id"] for row in rows}
+    return {row["id"]: {key: row[key] for key in tasks.RUN_EXECUTION} for row in rows}
 
 
-def _timeline(history: list[tasks.TaskEvent], live: set[str]) -> list[TimelineEntry]:
-    entries = []
-    for event in history:
-        label, tone = _event_label(event)
-        run = _run_kind(event.run_id, live)
-        text = event.message or ""
-        preview = formatting.preview(files.plain_text(text), PREVIEW_CHARS)
-        entries.append(TimelineEntry(event, label, tone, run, preview, files.render_output(text)))
-    return entries
-
-
-def _event_label(event: tasks.TaskEvent) -> tuple[str, str]:
-    payload = event.payload
-    match event.kind:
-        case "moved":
-            move = str(payload.get("move") or "moved")
-            tone = {"blocked": "warning", "cancelled": "muted"}.get(event.to_stage or "", "ok")
-            return f"{move}: {event.from_stage} → {event.to_stage}", tone
-        case "taken":
-            return "taken", "running"
-        case "released":
-            reason = str(payload.get("reason") or "").replace("_", " ")
-            return (f"released ({reason})" if reason else "released"), (
-                "warning" if reason == "run ended" else "muted"
-            )
-        case "created":
-            return (f"created in {event.to_stage}" if event.to_stage else "created"), "muted"
-        case "noted":
-            return ("note, needs attention" if payload.get("attention") else "note"), (
-                "warning" if payload.get("attention") else "muted"
-            )
-        case "ref":
-            return f"ref {payload.get('kind', '')} {payload.get('value', '')}".strip(), "muted"
-        case "submitted":
-            return f"handoff submitted: {event.from_stage} → {event.to_stage}", "running"
-        case "accepted":
-            return f"handoff accepted: {event.from_stage} → {event.to_stage}", "ok"
-        case "check_failed" | "workflow_blocked" | "interrupted":
-            return event.kind.replace("_", " "), "warning"
-        case _:
-            return event.kind.replace("_", " "), "muted"
+def _actor_names(paths: Paths, history: list[tasks.TaskEvent]) -> dict[str, str]:
+    """Slack names for chat actors whose events predate recording the sender's name."""
+    wanted = {
+        event.actor
+        for event in history
+        if event.actor.startswith("slack:") and not event.payload.get("actor_name")
+    }
+    if not wanted:
+        return {}
+    users = (slack_cache.load(paths).get("users") or {}).get("items") or {}
+    names = {}
+    for actor in wanted:
+        name = slack_cache.display_name(users.get(actor.partition(":")[2]))
+        if name:
+            names[actor] = name
+    return names
 
 
 _WORKFLOW_LABELS = {
@@ -357,7 +303,7 @@ _WORKFLOW_TONES = {
 }
 
 
-def workflow_rows(history: list[dict[str, Any]], live: set[str]) -> list[dict[str, Any]]:
+def workflow_rows(history: list[dict[str, Any]], live: Container[str]) -> list[dict[str, Any]]:
     """Decorate engine records without deriving acceptance from provider output or checks."""
     rows = []
     for transaction in history:
@@ -470,8 +416,10 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         | {entry["run_id"] for entry in transactions or [] if entry.get("run_id")}
     )
     live, _runs_error = common.attempt(partial(_existing_runs, paths, ids))
-    workflow = workflow_rows(transactions or [], live or set())
+    live = live or {}
+    workflow = workflow_rows(transactions or [], live)
     worktree, worktree_error = common.attempt(partial(_worktree, paths, ref))
+    names, _names_error = common.attempt(partial(_actor_names, paths, history or []))
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -484,7 +432,6 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "refs": attached or [],
         "worktree": worktree,
         "workflow": workflow,
-        "lifecycle": lifecycle or [],
         "workflow_notice": _workflow_notice(task, workflow),
         "handoff": ctx["handoff"] if ctx else None,
         "handoff_message": (
@@ -494,10 +441,21 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         # The verdict offers the run only while its row exists; pruned runs are named, not linked.
         "recovery_link": (
             f"/runs/{ctx['recovery']['run_id']}"
-            if ctx and ctx["recovery"] and ctx["recovery"]["run_id"] in (live or set())
+            if ctx and ctx["recovery"] and ctx["recovery"]["run_id"] in live
             else None
         ),
-        "timeline": _timeline(history or [], live or set()),
+        "timeline": timeline.build(
+            history or [],
+            transactions or [],
+            lifecycle or [],
+            live,
+            project,
+            names or {},
+            base=(worktree or {}).get("base") or (project.base if project else None),
+            finished=task.finished,
+            now=datetime.now(UTC),
+        ),
+        "events": len(history or []),
         # The context read only feeds the handoff and the recovery notice, so it reports last;
         # without this it would fail silently and the page would simply omit both.
         "error": (

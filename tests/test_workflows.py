@@ -76,7 +76,11 @@ async def test_simple_non_git_submission_waits_for_acceptance(enso_home, project
     result = await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
     assert result.status == "accepted"
     assert tasks.get(enso_home, task.ref).stage == "done"
-    assert workflows.history(enso_home, task.ref)[0]["checks"] == []
+    tx = workflows.history(enso_home, task.ref)[0]
+    assert tx["checks"] == []
+    # The accepted move names its transaction, so the timeline folds it into the handoff.
+    moved = next(event for event in tasks.events(enso_home, task.ref) if event.kind == "moved")
+    assert moved.payload == {"move": "advance", "transaction_id": tx["id"]}
 
 
 @pytest.mark.asyncio

@@ -113,9 +113,12 @@ Lists share the `.row` grid, spacing tokens, and panel separators. Event slots a
 | Finding | `.row.finding` | Severity · message | None |
 | Knowledge | `.row.knowledge-row` | Icon · name and location · value | Note age or folder count |
 | Action | `.row.action-row` | Icon · name · action | Explicit control |
+| Timeline | `.timeline` fold | Time · source icon · name · source · message · result, value | Duration or time |
 
 - The dot is the only row status indicator. Tags are for additional information, such as
-  workspace finding counts; headings and detail pages may use status tags.
+  workspace finding counts; headings and detail pages may use status tags. A task timeline
+  row replaces its dot with a source icon in the dot's colours, and a check or hook row adds
+  its result as a tag; its trail keeps tag, value, and chevron slots at fixed widths.
 - Error messages belong on the destination page, except in finding rows.
 - Supporting facts occupy one clipped line. Above 640px of list width, title and facts
   share a line with aligned title columns; below it, facts sit under the title.
@@ -287,15 +290,29 @@ handoff, timeline, and latest transaction notice. Submission, checking, repair, 
 interruption, blocking, and operator overrides are distinct states. Submitting a handoff
 or passing one check does not advance the displayed stage.
 
-Timeline rows keep time, state, and age on the event's first line. An event with a message
-folds to the message's plain words, one line wide or two on a narrow list. Opening it shows
-the full title, the message as Markdown with single newlines kept as line breaks, the exact
-time, and a link to a retained run. Events without a message link to a retained run
-directly. The handoff message renders the same way.
+The **timeline** reads oldest first, as stage visits. Each visit opens with a header: the
+stage, when it was entered, how long the task stayed, and, when one job worked it, the job
+and its model (`tt-build · claude opus · xhigh effort`, or `no model` for an integration or
+command run). Every event is one row with a fixed verb, such as Task created, Starting work,
+Added note, Commit `093415a`, or Handoff → review. The row's icon says who acted: a person,
+an agent (a model run), Enso applying its own rules, or a script (a project check, setup,
+teardown, or lifecycle hook); its colour is the state. The source column names only what
+the header and icon do not: a person (`Slack · Gavin`, `Terminal · gavin`), a script's
+command, or a job other than the visit's own. Chat events record the sender's name; older
+events use the Slack directory cache, then the raw ID.
+
+A handoff is one row, not its submission, move, and acceptance. Under it, steps show each
+attempt's checks with status and duration, repairs, a landing on the target branch, and
+Enso's decision to accept or block it. Lifecycle hooks are script rows in the visit they
+fired into. A row with a message folds to its plain words, one line wide or two on a narrow
+list; opening any row shows the message as Markdown with single newlines kept as line
+breaks (terminal output stays literal), the recorded actor, a link to a retained run, and
+the exact time. The handoff message renders the same way.
 
 **Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
 versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,
 exit code, duration, attempt, and literal diagnostics; lifecycle events retain retry IDs.
+A hook fired by a move outside a transaction has its attempts in its timeline row instead.
 Missing evidence is never a pass, and provider success does not imply acceptance. Evidence
 survives provider-run pruning without broken links. Manual checks are labelled **Operator
 verification** and have no provider-run link.

@@ -187,6 +187,10 @@ Actor identity is derived from the environment, never passed:
 | A chat turn (`ENSO_ORIGIN_TRANSPORT` set) | `slack:U0AETSSDDEF` or `telegram:123456`; `unknown` when the id is empty |
 | A terminal | `user:<login>` |
 
+A chat actor's event also records the sender's display name, for reading the timeline; the
+actor remains the identity the guards compare. `enso workflow verify` records the operator
+who ran it, and its execution ID starts with `manual-`.
+
 `ENSO_RUN_ID` says whether the command runs inside a job. That is what withholds `drop` and
 `--force` from an agent, and what lets the claiming run move its own task. Both are read
 from the calling process's environment, so they are guardrails for a cooperating agent, not
@@ -528,7 +532,9 @@ result is the [Task block](#the-task-block) context plus `events` (the full time
 newest first) and `workflow` (durable stage transactions). Missing `claim`, `handoff`, and
 `recovery` values are `null`; `notes` contains the newest five. `moves` omits `drop` inside
 a run. Events carry their actor, run, timestamp, message, and relevant move, release,
-edit, attention, claim, or reference details.
+edit, attention, claim, or reference details: a chat sender's `actor_name`, a claim's
+`execution` (the run's kind, provider, model, and effort, kept after the run row is pruned),
+and an accepted or interrupted move's `transaction_id`.
 
 Task moves print one line or, with `--json`, the task object. An in-run advance/return
 prints the retained stage because it submitted a handoff, not an already accepted move; `note` and `ref` print the event and the ref.

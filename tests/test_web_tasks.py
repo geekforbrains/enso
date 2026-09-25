@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import re
 import sqlite3
 from collections.abc import AsyncIterator
@@ -57,6 +59,20 @@ async def html(client: TestClient, path: str, status: int = 200) -> str:
 def task_links(body: str) -> list[str]:
     """The task rows on a list page, in order."""
     return re.findall(r'<a class="row entity" href="/tasks/([A-Z]+-\d+)"', body)
+
+
+def timeline_of(body: str) -> str:
+    return body.split("<h2>Timeline</h2>", 1)[1]
+
+
+def titles(body: str) -> list[str]:
+    """The timeline's row titles in reading order, oldest first; steps are not rows."""
+    return re.findall(r'<summary class="row">.*?<span class="title">([^<]*)</span>', body, re.S)
+
+
+def stages(body: str) -> list[str]:
+    """The stage visits the timeline opens with a header, in order."""
+    return re.findall(r'<div class="stage-visit">.*?<span class="chip">([^<]*)</span>', body, re.S)
 
 
 def heading(body: str) -> str:
@@ -413,23 +429,27 @@ async def test_task_page_shows_the_record(client: TestClient, board: Board) -> N
         '<div class="markdown"><p>Scope confirmed.<br />\nTouch slack_text.py only.</p>' in handoff
     )
     assert f'<a href="/runs/{board.run_id}"><code>{board.run_id}</code></a>' in page  # claim
-    assert f'<a class="row" href="/runs/{board.run_id}">' in page  # the taken event links
-    assert f'· run <span class="mono">{board.run_id}</span>' in page  # named in full, in the title
-    assert "<b>run</b>" not in page  # the trail is the relative time in every timeline row
+    # Every event folds; the one the run recorded links to it from the opened row.
+    run_link = (
+        f'<a href="/runs/{board.run_id}">Open run <span class="mono">{board.run_id}</span></a>'
+    )
+    assert run_link in timeline_of(page)
+    assert '<a class="row"' not in timeline_of(page)
     assert "Worktree" not in page  # the project has no repo
     # The stage is the pipeline chip and nothing else: the heading repeated it for nothing.
     assert '<span class="chip current">todo</span>' in page
     assert '<span class="tag' not in heading(page)
-    assert "run pruned" not in page
+    assert "pruned</span>" not in page
 
     pruned = await html(client, "/tasks/EN-004")
-    assert "run pruned" in pruned and 'href="/runs/deadbeef"' not in pruned
+    assert 'Run <span class="mono">deadbeef</span> pruned' in pruned
+    assert 'href="/runs/deadbeef"' not in pruned
     assert "Run deadbeef ended without a handoff" in pruned  # recovery context
-    assert "released (run ended)" in pruned and "taken" in pruned
+    assert titles(pruned) == ["Task created", "Starting work", "Run ended without a handoff"]
 
     blocked = await html(client, "/tasks/EN-002")
     assert '<span class="chip current">blocked</span>' in blocked  # off the pipeline, still shown
-    assert "block: triage → blocked" in blocked
+    assert titles(blocked) == ["Task created", "Blocked"]
     assert "second line stays off the row" in blocked  # the timeline keeps the whole message
 
     # A stage off the pipeline still shows, and only attention still qualifies the heading.
@@ -449,27 +469,56 @@ async def test_task_timeline_folds_messages_into_rendered_markdown(
 ) -> None:
     """A message shows as its words on one line; opening the event shows the Markdown."""
     message = "**Changed:** the `E6` email.\n\n1. Run it\n<script>unsafe()</script>"
-    tasks.note(board.paths, "EN-001", actor="job:dev:review", run_id=board.run_id, message=message)
-    timeline = (await html(client, "/tasks/EN-001")).split("<h2>Timeline</h2>", 1)[1]
-    note = timeline.split("</details>", 1)[0]  # newest first
-    assert '<details class="fold task-event">' in note
+    tasks.note(board.paths, "EN-001", actor="job:dev:todo", run_id=board.run_id, message=message)
+    timeline = timeline_of(await html(client, "/tasks/EN-001"))
+    note = timeline.split('<div class="task-event">')[-1]  # oldest first: the note is last
+    assert '<span class="title">Added note</span>' in note
     preview = "Changed: the E6 email. Run it &lt;script&gt;unsafe()&lt;/script&gt;"
     assert f'<span class="message">{preview}</span>' in note
     assert "<strong>Changed:</strong> the <code>E6</code> email.</p>\n<ol>" in note
     assert "Run it<br />\n&lt;script&gt;unsafe()&lt;/script&gt;</li>" in note
     assert "<script>unsafe()" not in timeline
-    # The row opens rather than links, so the run it came from is linked inside it; an
-    # event with no message still links straight to its run.
+    # The row opens rather than links, so the run it came from is linked inside it.
     run = board.run_id
     assert f'<a href="/runs/{run}">Open run <span class="mono">{run}</span></a>' in note
-    assert f'<a class="row" href="/runs/{run}">' in timeline
+    assert "<code>job:dev:todo</code>" in note  # the recorded actor stays readable
 
     # Past the render limit the message is shown as recorded rather than parsed.
     monkeypatch.setattr(files, "RENDER_LIMIT", 10)
-    timeline = (await html(client, "/tasks/EN-001")).split("<h2>Timeline</h2>", 1)[1]
-    note = timeline.split("</details>", 1)[0]
+    note = timeline_of(await html(client, "/tasks/EN-001")).split('<div class="task-event">')[-1]
     assert '<pre class="output bare" tabindex="0">**Changed:** the `E6` email.' in note
     assert '<span class="message">**Changed:** the `E6` email. 1. Run it' in note
+
+
+async def test_task_timeline_groups_stage_visits_and_names_only_other_actors(
+    client: TestClient, board: Board
+) -> None:
+    """A header names the job once; its rows leave the source empty, a person keeps a name."""
+    page = await html(client, "/tasks/EN-001")
+    assert stages(page) == ["triage", "todo"]
+    assert titles(page) == ["Task created", "Advanced → todo", "Commit abc123", "Starting work"]
+    todo = timeline_of(page).split('<div class="stage-visit">')[2]
+    assert '<span class="job">todo · claude opus · high effort</span>' in todo
+    assert '<span class="who"></span>' in todo  # the stage's own run: the header says who
+    assert '<span class="who">Terminal · gavin</span>' in todo  # the person who attached it
+    assert 'title="Agent"' in todo and 'title="Person"' in todo
+    assert "1 event" not in page and "4 events, oldest first" in page
+
+
+async def test_task_timeline_names_slack_people_from_the_cache(
+    client: TestClient, board: Board
+) -> None:
+    """Events from before names were recorded fall back to the Slack directory, then the id."""
+    flagged = timeline_of(await html(client, "/tasks/EN-007"))
+    assert '<span class="who">Slack · U1</span>' in flagged
+    board.paths.cache.mkdir(parents=True, exist_ok=True)
+    entry = {"id": "U1", "name": "gavin", "real_name": "Gavin", "display_name": ""}
+    board.paths.slack_cache.write_text(
+        json.dumps({"users": {"fetched_at": 0, "items": {"U1": entry}}})
+    )
+    named = timeline_of(await html(client, "/tasks/EN-007"))
+    assert '<span class="who">Slack · Gavin</span>' in named
+    assert "<code>slack:U1</code>" in named  # the opened row keeps the recorded identity
 
 
 async def test_task_page_reports_a_failed_context_read(
@@ -663,14 +712,16 @@ async def test_operator_verification_has_no_provider_run_link_while_active_or_co
         held = tasks.get(enso_home, task.ref)
         run_id = held.claim_run_id
         assert run_id is not None and run_id.startswith("manual-")
-        assert held.claim_actor == "user:verify"
+        operator = tasks.actor_from_env(os.environ)  # the person verifying, not a placeholder
+        assert held.claim_actor == operator
         assert not taskviews._existing_runs(enso_home, [run_id])
         active = await html(client, f"/tasks/{task.ref}")
         assert re.search(
             rf"<dt>Claim</dt>\s*<dd>Operator verification <code>{run_id}</code>", active
         )
         assert f"<dt>Execution</dt><dd>Operator verification <code>{run_id}</code>" in active
-        assert "· Operator verification" in active  # the submitted event in the timeline
+        label = taskviews.timeline.who(operator, {}, {})
+        assert f'<span class="who">{label} · verify</span>' in active  # the submitted handoff
         assert "run pruned" not in active and f'href="/runs/{run_id}"' not in active
         board = await html(client, "/tasks")
         assert f'Operator verification <span class="mono">{run_id}</span>' in board
@@ -735,10 +786,15 @@ async def test_task_lifecycle_history_includes_manual_moves_and_delivery_retries
     monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [])
     monkeypatch.setattr(workflows, "event_history", lambda _paths, _ref: [event])
     page = await html(client, "/tasks/EN-001")
-    assert "Workflow history" not in page and "Lifecycle scripts" in page
-    assert "manual-event" in page and "delivered" in page
-    assert "Test suite failed" in page and "24 passed" in page
-    assert "attempt 1" in page and "attempt 2" in page
+    # A hook with no transaction has no evidence panel: the timeline row carries every try.
+    assert "Workflow history" not in page and "Lifecycle scripts" not in page
+    hook = timeline_of(page).split('<div class="task-event">')[-1]
+    assert '<span class="title">after:done hook</span>' in hook
+    assert (
+        '<span class="tag tag-ok">passed</span>' in hook and "Event <code>manual-e</code>" in hook
+    )
+    assert "Attempt 1: failed, exit 1, 1.3s\nTest suite failed" in hook
+    assert "Attempt 2: passed, exit 0, 0.8s\n24 passed" in hook
 
 
 async def test_board_loads_transaction_summaries_once_without_evidence(

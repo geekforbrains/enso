@@ -1028,6 +1028,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
     if not message.strip():
         raise tasks.TaskError("a handoff message is required")
     run_id = "manual-" + uuid.uuid4().hex
+    actor = tasks.actor_from_env(os.environ)  # the operator; the run id marks the verification
     with worktrees.execution_context(paths, task.ref):
         with db.transaction(paths) as con:
             current = tasks._load(con, ref)
@@ -1041,7 +1042,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
                 raise tasks.TaskError("finish pending lifecycle scripts before verifying")
             con.execute(
                 "UPDATE _enso_tasks SET claim_run_id=?,claim_actor=?,claim_at=? WHERE id=?",
-                (run_id, "user:verify", db.now(), task.id),
+                (run_id, actor, db.now(), task.id),
             )
         try:
             if project.repo and stage.worktree is not False:
@@ -1055,7 +1056,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
                     "advance",
                     project.next_stage(current.stage),
                     message,
-                    "user:verify",
+                    actor,
                     run_id,
                     [],
                 )

@@ -7,9 +7,18 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
-- Task timeline events keep their time and status on the first line and fold long
-  messages to a one-line preview; opening an event shows its message as Markdown with a
-  link to its run. The task page's handoff message is also rendered as Markdown.
+- The task timeline reads oldest first as stage visits. Each visit's header names the stage,
+  its duration, and the job and model that worked it. Every event is one row with an icon
+  for who acted (person, agent, Enso, or script) and a plain verb; the source column names
+  only people, commands, and other jobs, with Slack and Telegram senders shown by name.
+  A handoff is one row with its checks, repairs, landing, and Enso's decision beneath it,
+  and lifecycle hooks appear where they fired. Rows fold long messages to a preview;
+  opening one shows the message as Markdown, the recorded actor, and its run. The task
+  page's handoff message is also rendered as Markdown, and the separate lifecycle panel is
+  gone: hooks from a transaction stay in its workflow history.
+- Task events record more for the timeline: a chat sender's name, the claiming run's kind
+  and model, and a move's transaction. `enso workflow verify` records the operator who ran
+  it instead of `user:verify`.
 
 ## [0.4.1] - 2026-09-23
 

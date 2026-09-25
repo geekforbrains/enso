@@ -509,7 +509,7 @@ async def test_markdown_task_lists_show_read_only_state(
 
 @pytest.fixture
 def timeline_task(enso_home, project_config):
-    """A task whose newest event carries a long Markdown message, above short ones."""
+    """A task whose newest event carries a long Markdown message, below short ones."""
     task = tasks.create(enso_home, project_config, "EN", "Retire the coupon email", actor="user:qa")
     for move, message in [
         ("advance", "Scope confirmed"),
@@ -547,7 +547,7 @@ async def test_task_timeline_folds_messages_on_the_first_line(
     )
     page = await context.new_page()
     await page.goto(viewer + f"tasks/{timeline_task}")
-    event = page.locator(".timeline details.task-event").first
+    event = page.locator(".timeline .task-event details").last  # oldest first
     summary = event.locator("summary")
     preview = summary.locator(".message")
     body = event.locator(".markdown")
@@ -557,12 +557,25 @@ async def test_task_timeline_folds_messages_on_the_first_line(
     lines = (await preview.bounding_box())["height"] / 18
     assert lines <= (1 if width == 1280 else 2) + 0.1
 
-    # Time, dot, and age mark the title's line rather than the middle of the row.
+    # Time, source icon, and trail mark the title's line rather than the middle of the row.
     title = await summary.locator(".title").bounding_box()
     line = title["y"] + 9
-    for part in (".at", ".pin", ".trail"):
+    for part in (".at", ".src", ".trail"):
         box = await summary.locator(part).bounding_box()
         assert abs(box["y"] + box["height"] / 2 - line) <= 2, part
+    # A source icon sits in the middle of its circle, in a row as in a stage header.
+    for badge in await page.locator(".timeline .src").all():
+        circle, glyph = await badge.bounding_box(), await badge.locator("svg").bounding_box()
+        for axis, size in (("x", "width"), ("y", "height")):
+            middle = circle[axis] + circle[size] / 2
+            assert abs(glyph[axis] + glyph[size] / 2 - middle) <= 0.5, axis
+    # Every trail keeps its value and chevron slots at the same place, filled or empty.
+    edges = {
+        round(box["x"] + box["width"])
+        for slot in await page.locator(".timeline .trail.slots > :nth-child(2)").all()
+        if (box := await slot.bounding_box())
+    }
+    assert len(edges) == 1, edges
     timeline = page.locator(".timeline")
     await timeline.screenshot(path=str(tmp_path / f"task-timeline-{width}-js-{javascript}.png"))
 
@@ -571,7 +584,9 @@ async def test_task_timeline_folds_messages_on_the_first_line(
     await expect(body.locator("ol > li")).to_have_count(2)
     await expect(body.locator("code")).to_have_text("projects/TT/qa.sh up TT-001")
     await expect(preview).to_be_hidden()
-    await expect(summary.locator(".title")).to_contain_text("by job:workspace:tt-review")
+    # Another job than the stage's is named; the opened row keeps the recorded actor.
+    await expect(summary.locator(".who")).to_have_text("Job · tt-review")
+    await expect(event.locator(".task-event-meta")).to_contain_text("job:workspace:tt-review")
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await timeline.screenshot(path=str(tmp_path / f"task-event-{width}-js-{javascript}.png"))
     await summary.click()

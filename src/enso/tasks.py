@@ -38,6 +38,7 @@ from .config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 FINISHED = ("done", "cancelled")
 MOVES = ("advance", "return", "block", "resume", "drop")
 RELEASE_REASONS = ("run_ended", "manual", "deferred")
+RUN_EXECUTION = ("kind", "provider", "model", "effort")  # copied from its run onto `taken`
 ENSO_ACTOR = "enso"
 RECENT_NOTES = 5
 _HANDOFF_KEYS = ("kind", "actor", "run_id", "from_stage", "to_stage", "message")
@@ -162,6 +163,18 @@ def actor_from_env(env: Mapping[str, str]) -> str:
     return f"user:{getpass.getuser()}"
 
 
+def _sender_name(actor: str) -> str:
+    """The chat sender's display name, when this process acts for that sender.
+
+    The name is recorded beside the actor, which stays the stable identity the claim
+    guards use, so the timeline can say who without a transport lookup.
+    """
+    env = os.environ
+    if env.get("ENSO_JOB") or not env.get("ENSO_ORIGIN_TRANSPORT") or actor != actor_from_env(env):
+        return ""
+    return clean_text(env.get("ENSO_ORIGIN_USER_NAME", ""), single_line=True)[:80]
+
+
 def in_run(env: Mapping[str, str]) -> str | None:
     """The job run this process belongs to, or None outside one."""
     return env.get("ENSO_RUN_ID") or None
@@ -230,7 +243,10 @@ def _record(
     message: str = "",
     payload: Mapping[str, Any] | None = None,
 ) -> TaskEvent:
-    fields = (task_id, kind, actor, run_id, from_stage, to_stage, message, dict(payload or {}))
+    payload = dict(payload or {})
+    if name := _sender_name(actor):
+        payload["actor_name"] = name
+    fields = (task_id, kind, actor, run_id, from_stage, to_stage, message, payload)
     event = TaskEvent(0, *fields, db.now())
     values = {**asdict(event), "payload": json.dumps(event.payload)}
     del values["id"]
@@ -664,7 +680,7 @@ def _apply_move(
         from_stage=task.stage,
         to_stage=to,
         message=message,
-        payload={"move": move_id},
+        payload={"move": move_id, **({"transaction_id": transaction_id} if transaction_id else {})},
     )
     if config is not None:
         from . import workflows
@@ -986,7 +1002,14 @@ def take(
         )
         if cursor.rowcount != 1:
             raise TaskError(f"task {row['id']} was claimed under the write lock")
-        _record(con, row["id"], "taken", actor, run_id, payload={"stage": stage})
+        # What ran, kept on the event because run rows are pruned and task events are not.
+        run = con.execute(
+            f"SELECT {', '.join(RUN_EXECUTION)} FROM runs WHERE id = ?", (run_id,)
+        ).fetchone()
+        payload: dict[str, Any] = {"stage": stage}
+        if run is not None:
+            payload["execution"] = {key: run[key] for key in RUN_EXECUTION if run[key]}
+        _record(con, row["id"], "taken", actor, run_id, payload=payload)
         return _reload(con, row["id"])
 
 
