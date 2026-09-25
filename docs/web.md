@@ -125,10 +125,13 @@ Lists share the `.row` grid, spacing tokens, and panel separators. Event slots a
   a primary value when a second line supports it; single-line values stay plain.
 - Monospace identifies literals: paths, cron expressions, run IDs, and skill names.
 - Navigation rows link to details. Never nest links or controls inside a linked row.
+- An event whose content needs reading folds: a native `details.fold` whose summary is the
+  row, with a trailing chevron. It opens in place instead of linking, so its links belong
+  in the opened body.
 
 Phone rows retain time, state, name, and value, usually hiding supporting facts. Task rows
-retain and wrap their reference, stage, phase, and origin; task timeline messages also wrap.
-Lists must not require horizontal scrolling.
+retain and wrap their reference, stage, phase, and origin. Lists must not require
+horizontal scrolling.
 
 ## Forms and actions
 
@@ -283,6 +286,12 @@ At `/tasks/<ref>`, the task page shows its accepted stage, priority, claim, spec
 handoff, timeline, and latest transaction notice. Submission, checking, repair, acceptance,
 interruption, blocking, and operator overrides are distinct states. Submitting a handoff
 or passing one check does not advance the displayed stage.
+
+Timeline rows keep time, state, and age on the event's first line. An event with a message
+folds to the message's plain words, one line wide or two on a narrow list. Opening it shows
+the full title, the message as Markdown with single newlines kept as line breaks, the exact
+time, and a link to a retained run. Events without a message link to a retained run
+directly. The handoff message renders the same way.
 
 **Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
 versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,

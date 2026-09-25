@@ -16,7 +16,9 @@ from functools import partial
 from pathlib import Path
 from typing import Any
 
-from .. import db, tasks, workflows, worktrees
+from markupsafe import Markup
+
+from .. import db, formatting, tasks, workflows, worktrees
 from ..config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 from ..jobs import Job, load_jobs
 from . import common, files
@@ -46,6 +48,8 @@ DONE_WINDOW = timedelta(days=7)  # the count line says this week's finishes; the
 DONE_LIMIT = 200
 GIT_TIMEOUT = 5.0
 _STAGE_NAME = re.compile(r"[a-z][a-z0-9-]{0,23}")
+# A folded event shows one line of its message (two on a phone); the rest is never drawn.
+PREVIEW_CHARS = 200
 
 
 @dataclass(frozen=True)
@@ -68,12 +72,18 @@ class TaskGroup:
 
 @dataclass(frozen=True)
 class TimelineEntry:
-    """One event as a row: a label for what happened, and whether its run can be opened."""
+    """One event as a row: a label for what happened, and whether its run can be opened.
+
+    A message folds: the row shows its words as plain text, and opening it shows the
+    rendered Markdown, or ``message`` is ``None`` and the page shows the text as recorded.
+    """
 
     event: tasks.TaskEvent
     label: str
     tone: str
     run: str | None  # ``operator``, or ``live``/``pruned`` provider execution
+    preview: str = ""
+    message: Markup | None = None
 
 
 def _operator_verification(run_id: str | None) -> bool:
@@ -287,7 +297,9 @@ def _timeline(history: list[tasks.TaskEvent], live: set[str]) -> list[TimelineEn
     for event in history:
         label, tone = _event_label(event)
         run = _run_kind(event.run_id, live)
-        entries.append(TimelineEntry(event, label, tone, run))
+        text = event.message or ""
+        preview = formatting.preview(files.plain_text(text), PREVIEW_CHARS)
+        entries.append(TimelineEntry(event, label, tone, run, preview, files.render_output(text)))
     return entries
 
 
@@ -475,6 +487,9 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "lifecycle": lifecycle or [],
         "workflow_notice": _workflow_notice(task, workflow),
         "handoff": ctx["handoff"] if ctx else None,
+        "handoff_message": (
+            files.render_output(ctx["handoff"]["message"]) if ctx and ctx["handoff"] else None
+        ),
         "recovery": ctx["recovery"] if ctx else None,
         # The verdict offers the run only while its row exists; pruned runs are named, not linked.
         "recovery_link": (

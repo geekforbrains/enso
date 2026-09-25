@@ -1,13 +1,14 @@
 """Optional real-browser checks against a disposable home and loopback viewer."""
 
 import asyncio
+import re
 from uuid import uuid4
 
 import pytest
 from aiohttp.test_utils import TestServer
 from conftest import load_job, write_config, write_job
 
-from enso import db, knowledge, runs, secrets, workspaces
+from enso import db, knowledge, runs, secrets, tasks, workspaces
 from enso.config import load_config
 from enso.web.server import create_app
 
@@ -503,6 +504,79 @@ async def test_markdown_task_lists_show_read_only_state(
         )
         await markdown.get_by_role("link", name="related note", exact=True).click()
         await expect(page.locator(".markdown")).to_contain_text("Related content is reachable.")
+    await context.close()
+
+
+@pytest.fixture
+def timeline_task(enso_home, project_config):
+    """A task whose newest event carries a long Markdown message, above short ones."""
+    task = tasks.create(enso_home, project_config, "EN", "Retire the coupon email", actor="user:qa")
+    for move, message in [
+        ("advance", "Scope confirmed"),
+        ("block", "Rule inputs changed:\nbackend/content_test.go,\nbackend/engine_test.go."),
+    ]:
+        tasks.move(
+            enso_home, project_config, task.ref, move, actor="enso", run_id=None, message=message
+        )
+    tasks.add_ref(enso_home, task.ref, "commit", "093415ab" * 5, actor="user:qa", run_id=None)
+    tasks.note(
+        enso_home,
+        task.ref,
+        actor="job:workspace:tt-review",
+        run_id=None,
+        message=(
+            "**Changed:** E6 and the THREAD25 coupon email are retired; the remaining email "
+            "order and daily cap stay intact, including historical E6 sends.\n\n**Try it:**\n"
+            "1. From the workspace, run `projects/TT/qa.sh up TT-001` to start its QA stack.\n"
+            "2. Open the synthetic inbox: no THREAD25 coupon email should appear."
+        ),
+    )
+    return task.ref
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+@pytest.mark.parametrize("javascript", [True, False])
+async def test_task_timeline_folds_messages_on_the_first_line(
+    browser, viewer, timeline_task, width, javascript, tmp_path
+):
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900},
+        java_script_enabled=javascript,
+        color_scheme="dark" if width == 320 else "light",
+        reduced_motion="reduce",
+    )
+    page = await context.new_page()
+    await page.goto(viewer + f"tasks/{timeline_task}")
+    event = page.locator(".timeline details.task-event").first
+    summary = event.locator("summary")
+    preview = summary.locator(".message")
+    body = event.locator(".markdown")
+    await expect(preview).to_have_text(re.compile(r"^Changed: E6 and the THREAD25"))
+    await expect(body).to_be_hidden()
+    # The preview is one line in a wide list and two in a narrow one, however long the note.
+    lines = (await preview.bounding_box())["height"] / 18
+    assert lines <= (1 if width == 1280 else 2) + 0.1
+
+    # Time, dot, and age mark the title's line rather than the middle of the row.
+    title = await summary.locator(".title").bounding_box()
+    line = title["y"] + 9
+    for part in (".at", ".pin", ".trail"):
+        box = await summary.locator(part).bounding_box()
+        assert abs(box["y"] + box["height"] / 2 - line) <= 2, part
+    timeline = page.locator(".timeline")
+    await timeline.screenshot(path=str(tmp_path / f"task-timeline-{width}-js-{javascript}.png"))
+
+    await summary.click()
+    await expect(body.locator("strong").first).to_have_text("Changed:")
+    await expect(body.locator("ol > li")).to_have_count(2)
+    await expect(body.locator("code")).to_have_text("projects/TT/qa.sh up TT-001")
+    await expect(preview).to_be_hidden()
+    await expect(summary.locator(".title")).to_contain_text("by job:workspace:tt-review")
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await timeline.screenshot(path=str(tmp_path / f"task-event-{width}-js-{javascript}.png"))
+    await summary.click()
+    await expect(body).to_be_hidden()
+    await expect(preview).to_be_visible()
     await context.close()
 
 

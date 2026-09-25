@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
 {% import "_workflow.html" as w %}
+{% from "_icons.html" import icon %}
 {% block title %}{{ ref }}{% if task %} · {{ task.title }}{% endif %}{% endblock %}
 {% block content %}
 <p class="crumbs"><a href="/tasks">Tasks</a>{% if task %} / <a href="/tasks?project={{ task.project|urlencode }}&amp;workspace={{ task.workspace|urlencode }}">{{ project_name }}</a>{% endif %} / <span aria-current="page">{{ ref }}</span></p>
@@ -78,7 +79,7 @@
 
 {% if handoff %}
 <div class="shead"><h2>Handoff</h2><span class="right">{{ handoff.from_stage }} → {{ handoff.to_stage }} by {{ handoff.actor }} · {{ handoff.at|ago }}</span></div>
-<div class="panel"><pre class="output bare" tabindex="0">{{ handoff.message }}</pre></div>
+<div class="panel">{% if handoff_message %}<div class="markdown">{{ handoff_message }}</div>{% else %}<pre class="output bare" tabindex="0">{{ handoff.message }}</pre>{% endif %}</div>
 {% endif %}
 
 <div class="shead"><h2>Refs</h2></div>
@@ -94,20 +95,36 @@
   {% endif %}
 </div>
 
-<div class="shead"><h2>Timeline</h2><span class="right">{{ timeline|length }} event{{ 's' if timeline|length != 1 }}, newest first</span></div>
-{% if timeline %}
-<div class="panel rows">
-  {% for entry in timeline %}
-  {% set event = entry.event %}
-  {% if entry.run == 'live' %}<a class="row" href="/runs/{{ event.run_id|urlencode }}">{% else %}<div class="row still">{% endif %}
+{# One event's cells. A row with a message folds: it adds the message's words as one line
+   and a chevron, and the row itself opens instead of linking to the run. #}
+{% macro event_cells(entry, fold=False) -%}
+{% set event = entry.event %}
     <span class="at">{{ m.time(event.created_at) }}</span>
     <span class="pin {{ entry.tone }}"></span>
     <span class="body">
       <span class="title">{{ entry.label }} <span class="muted">by {{ event.actor }}{% if entry.run == 'live' %} · run <span class="mono">{{ event.run_id }}</span>{% elif entry.run == 'operator' %} · Operator verification{% elif entry.run == 'pruned' %} · run pruned{% endif %}</span></span>
-      {% if event.message %}<span class="message">{{ event.message }}</span>{% endif %}
+      {% if fold %}<span class="message">{{ entry.preview }}</span>{% endif %}
     </span>
-    <span class="trail">{{ event.created_at|ago }}</span>
-  {% if entry.run == 'live' %}</a>{% else %}</div>{% endif %}
+    <span class="trail">{{ event.created_at|ago }}{% if fold %}{{ icon('chevron-right', 14) }}{% endif %}</span>
+{%- endmacro %}
+<div class="shead"><h2>Timeline</h2><span class="right">{{ timeline|length }} event{{ 's' if timeline|length != 1 }}, newest first</span></div>
+{% if timeline %}
+<div class="panel rows timeline">
+  {% for entry in timeline %}
+  {% set event = entry.event %}
+  {% if event.message %}
+  <details class="fold task-event">
+    <summary class="row">{{ event_cells(entry, fold=True) }}</summary>
+    <div class="task-event-body">
+      {% if entry.message %}<div class="markdown">{{ entry.message }}</div>{% else %}<pre class="output bare" tabindex="0">{{ event.message }}</pre>{% endif %}
+      <p class="task-event-meta">{% if entry.run == 'live' %}<a href="/runs/{{ event.run_id|urlencode }}">Open run <span class="mono">{{ event.run_id }}</span></a> · {% endif %}<time datetime="{{ event.created_at|iso }}">{{ event.created_at|when }}</time></p>
+    </div>
+  </details>
+  {% elif entry.run == 'live' %}
+  <a class="row" href="/runs/{{ event.run_id|urlencode }}">{{ event_cells(entry) }}</a>
+  {% else %}
+  <div class="row still">{{ event_cells(entry) }}</div>
+  {% endif %}
   {% endfor %}
 </div>
 {% else %}

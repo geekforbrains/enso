@@ -5,6 +5,12 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Changed
+
+- Task timeline events keep their time and status on the first line and fold long
+  messages to a one-line preview; opening an event shows its message as Markdown with a
+  link to its run. The task page's handoff message is also rendered as Markdown.
+
 ## [0.4.1] - 2026-09-23
 
 ### Added

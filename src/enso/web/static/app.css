@@ -636,12 +636,54 @@
   :is(.workflow-transaction, .workflow-result, .workflow-definition)[open] > summary > svg { transform: rotate(90deg); }
   .verdict.running .lamp { background: var(--running-fill); color: var(--on-fill); }
   details.panel h3, .beat-event-body h3 { padding: var(--s-5) var(--s-6) 0; }
-  /* The chevron trails the event number: a beat event's status dot owns the column a
+  /* The chevron trails the event number or age: an event's status dot owns the column a
      fold normally puts its chevron in, and the dot is the more useful of the two. */
-  .beat-event > summary > .trail {
+  :is(.beat-event, .task-event) > summary > .trail {
     display: flex; align-items: center; justify-content: flex-end; gap: var(--s-3);
   }
   .beat-event-body .range { padding: 0 var(--s-6) var(--s-4); margin: 0; }
+
+  /* -- Task timeline ---------------------------------------------------------
+     Read top down, so time, dot, and age stay on an event's first line instead of
+     centring on whatever follows it. The padding is what centring gave a one-line row,
+     so a short event keeps the height of every other list's rows. A message folds to its
+     words on one line (two in a narrow list); opening the event hides that preview and
+     shows the rendered message under the title, which unclips to name the actor in full. */
+  .timeline {
+    .row {
+      align-items: start; padding-block: calc((44px - var(--lh-sm)) / 2);
+      .pin { margin-top: calc((var(--lh-sm) - 8px) / 2); }
+      .trail { align-self: start; }
+      .message {
+        display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2;
+        overflow: hidden; white-space: normal;
+      }
+    }
+    .task-event[open] > summary {
+      border-bottom: 0;
+      .message { display: none; }
+      .title { white-space: normal; }
+    }
+    @container (inline-size > 640px) {
+      .row { padding-block: calc((40px - var(--lh-sm)) / 2); }
+      .row .message {
+        display: block; flex: 1 1 0; min-width: 0; margin-top: 0;
+        white-space: nowrap; text-overflow: ellipsis;
+      }
+      .task-event[open] > summary .title { flex: 1 1 auto; }
+    }
+  }
+  /* The message starts where the title does, so the dot column still reads down the list. */
+  .task-event-body {
+    display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
+    padding: 0 var(--s-6) var(--s-6) 0;
+    > * { grid-column: 3 / -1; min-width: 0; }
+    .markdown { padding: 0; font-size: var(--text-sm); line-height: 1.55; > :last-child { margin-bottom: 0; } }
+    .output { padding: 0; }
+  }
+  .task-event-meta {
+    margin-top: var(--s-4); font-size: var(--text-xs); line-height: var(--lh-xs); color: var(--fg-3);
+  }
 
   /* -- Prose (Markdown files) ----------------------------------------------- */
 
@@ -859,7 +901,6 @@
       > li { background: var(--surface); border: 0; }
       > li:first-child { grid-column: 1 / -1; }
     }
-    .row .message { display: block; }
     /* Two tidy lines: name and verdict, then the chart underneath. The bars keep
        their natural size: stretching them would make a five-run history look like
        a fifty-run one. */

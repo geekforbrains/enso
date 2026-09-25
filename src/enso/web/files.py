@@ -219,8 +219,10 @@ def _renderer(*, breaks: bool) -> MarkdownIt:
 
 _markdown = _renderer(breaks=False)
 # Provider output is a transcript, not a document: its single newlines separate log lines,
-# command echoes, and stderr, so they have to survive as line breaks. Authored Markdown
-# (a task spec, a job prompt) reflows the way CommonMark says, hence the second renderer.
+# command echoes, and stderr, so they have to survive as line breaks. A recorded message
+# (a task event, a handoff) is the same: a list of paths one per line must not run together.
+# Authored Markdown (a task spec, a job prompt) reflows the way CommonMark says, hence the
+# second renderer.
 _transcript = _renderer(breaks=True)
 # A run of ``-`` or ``=`` under a line is a separator the CLI printed, not a heading
 # underline. Left enabled, every provider banner and every grep hit that happens to be
@@ -245,7 +247,8 @@ def render_markdown(text: str) -> Markup:
 
 
 def render_output(text: str) -> Markup | None:
-    """Provider output as HTML, keeping its line breaks, or ``None`` when it is too large.
+    """Provider output or a recorded message as HTML, keeping its line breaks, or ``None``
+    when it is too large.
 
     ``None`` tells the page to fall back to the preformatted block rather than spend the
     request rendering a transcript nobody reads to the end.
@@ -253,3 +256,25 @@ def render_output(text: str) -> Markup | None:
     if len(text) > RENDER_LIMIT:
         return None
     return Markup(_transcript.render(text))
+
+
+def plain_text(text: str) -> str:
+    """The words ``render_output`` would show, on one line and without Markdown syntax.
+
+    A preview cut from the source would show its asterisks and backticks. The parsed
+    tokens already hold the visible text; markers, emphasis, and link targets carry none.
+    """
+    if len(text) > RENDER_LIMIT:
+        return " ".join(text.split())
+    parts = []
+    for token in _transcript.parse(text):
+        if token.type == "inline":
+            parts.append(
+                "".join(
+                    " " if child.type in ("softbreak", "hardbreak") else child.content
+                    for child in token.children or []
+                )
+            )
+        elif token.type in ("fence", "code_block"):
+            parts.append(token.content)
+    return " ".join(" ".join(parts).split())

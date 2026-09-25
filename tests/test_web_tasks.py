@@ -23,6 +23,7 @@ from conftest import (
 
 from enso import runs, tasks, web, workflows, worktrees
 from enso.config import Config, Paths, load_config
+from enso.web import files
 from enso.web import tasks as taskviews
 from enso.web.server import create_app
 
@@ -406,7 +407,11 @@ async def test_task_page_shows_the_record(client: TestClient, board: Board) -> N
     assert "<h1>Spec</h1>" in page and "&lt;script&gt;alert(1)&lt;/script&gt;" in page
     assert "<script>alert(1)" not in page
     assert "<code>abc123</code>" in page  # refs
-    assert "Scope confirmed.\nTouch slack_text.py only." in page  # the handoff, verbatim
+    handoff = page.split("<h2>Handoff</h2>", 1)[1].split("<h2>Refs</h2>", 1)[0]
+    # The handoff is Markdown, and its single newline stays a line break.
+    assert (
+        '<div class="markdown"><p>Scope confirmed.<br />\nTouch slack_text.py only.</p>' in handoff
+    )
     assert f'<a href="/runs/{board.run_id}"><code>{board.run_id}</code></a>' in page  # claim
     assert f'<a class="row" href="/runs/{board.run_id}">' in page  # the taken event links
     assert f'· run <span class="mono">{board.run_id}</span>' in page  # named in full, in the title
@@ -437,6 +442,34 @@ async def test_task_page_shows_the_record(client: TestClient, board: Board) -> N
     assert "Not found" in await html(client, "/tasks/EN-999", 404)
     assert "Not found" in await html(client, "/tasks/nope", 404)
     assert "Not found" in await html(client, "/tasks/EN-1;DROP", 404)
+
+
+async def test_task_timeline_folds_messages_into_rendered_markdown(
+    client: TestClient, board: Board, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A message shows as its words on one line; opening the event shows the Markdown."""
+    message = "**Changed:** the `E6` email.\n\n1. Run it\n<script>unsafe()</script>"
+    tasks.note(board.paths, "EN-001", actor="job:dev:review", run_id=board.run_id, message=message)
+    timeline = (await html(client, "/tasks/EN-001")).split("<h2>Timeline</h2>", 1)[1]
+    note = timeline.split("</details>", 1)[0]  # newest first
+    assert '<details class="fold task-event">' in note
+    preview = "Changed: the E6 email. Run it &lt;script&gt;unsafe()&lt;/script&gt;"
+    assert f'<span class="message">{preview}</span>' in note
+    assert "<strong>Changed:</strong> the <code>E6</code> email.</p>\n<ol>" in note
+    assert "Run it<br />\n&lt;script&gt;unsafe()&lt;/script&gt;</li>" in note
+    assert "<script>unsafe()" not in timeline
+    # The row opens rather than links, so the run it came from is linked inside it; an
+    # event with no message still links straight to its run.
+    run = board.run_id
+    assert f'<a href="/runs/{run}">Open run <span class="mono">{run}</span></a>' in note
+    assert f'<a class="row" href="/runs/{run}">' in timeline
+
+    # Past the render limit the message is shown as recorded rather than parsed.
+    monkeypatch.setattr(files, "RENDER_LIMIT", 10)
+    timeline = (await html(client, "/tasks/EN-001")).split("<h2>Timeline</h2>", 1)[1]
+    note = timeline.split("</details>", 1)[0]
+    assert '<pre class="output bare" tabindex="0">**Changed:** the `E6` email.' in note
+    assert '<span class="message">**Changed:** the `E6` email. 1. Run it' in note
 
 
 async def test_task_page_reports_a_failed_context_read(
