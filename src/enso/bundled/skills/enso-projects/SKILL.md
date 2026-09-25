@@ -14,4 +14,4 @@ Read the reference for the current operation:
 - [projects.md](references/projects.md) before creating or editing a project definition.
 - [tasks.md](references/tasks.md) when working a Task block or changing the task board.
 - [workflows.md](references/workflows.md) before configuring stages, checks, worktrees,
-  lifecycle hooks, or recovering a failed workflow.
+  lifecycle hooks or blocked-work notices, or recovering a failed workflow.

@@ -248,10 +248,12 @@ A failed or interrupted execution preserves its diagnostic and work for recovery
 stops. Repairs and returns have finite budgets that persist across restarts. Stages without
 checks still require a submitted handoff before acceptance.
 
-[Lifecycle scripts](tasks.md#lifecycle-scripts) react to accepted transitions or worktree
-cleanup. They are persisted separately from job gate/postrun invocations, use stable event
-IDs, and may be delivered more than once. A failed reaction raises attention without undoing
-the move. Use checks for lint/tests and `hooks["after:done"]` for completion reactions.
+[Lifecycle scripts](tasks.md#lifecycle-scripts) react to task moves or worktree cleanup.
+They are persisted separately from job gate/postrun invocations, use stable event IDs, and
+may be delivered more than once. A failed reaction raises attention without undoing the
+move. Use checks for lint/tests, `hooks["after:done"]` for completion reactions, and
+`hooks["after:blocked"]` to tell people when work needs them; it replaces the runner's
+[alert](#alerts) for a stage run that blocked its task.
 
 Task ownership lasts through checks and repair; worktree-using lifecycle events prevent
 reuse or cleanup until delivered. Integration is an explicit stage with its own repository
@@ -555,6 +557,15 @@ the run a failure. Prompts and scripts can send messages themselves with
 - gate failure: `⚠️ [<workspace>:<job>] gate failed` plus the diagnostic
 - unresolved secrets: `⚠️ [<workspace>:<job>] secrets unavailable` plus the diagnostic
 - postrun failure: `⚠️ [<workspace>:<job>] postrun failed` plus the diagnostic
+
+A failed stage run normally settles its task: the task moves to `blocked` with the cause,
+whether the agent blocked it, Enso refused the handoff, or preparation, the provider, or
+postrun failed. The task then owns the notice. When the project defines a hook for the
+task's new stage, such as `hooks["after:blocked"]`, the runner sends nothing and that
+[lifecycle script](tasks.md#lifecycle-scripts) reports it. Otherwise the runner sends
+`⚠️ [<workspace>:<job>] <REF> blocked` plus the cause, never the agent's reply. Gate and
+secrets failures happen before a task is claimed and alert as above, as does a run that
+could not settle its task.
 
 ## Run history
 

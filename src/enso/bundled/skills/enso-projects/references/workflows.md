@@ -6,7 +6,7 @@ stage is valid; repositories, checks, reviews, and integration are optional. The
 preset adds planning, checked implementation, review, and engine-run integration.
 
 Put acceptance requirements in stage checks, agent instructions in stage jobs, and reactions
-to accepted transitions in lifecycle hooks. Use `enso-jobs` for job definitions: agent stages
+to task moves in lifecycle hooks. Use `enso-jobs` for job definitions: agent stages
 declare `agent`; command/integration stages omit both `agent` and `command` because
 `PROJECT.md` owns execution. Do not replace missing validation with an always-passing command.
 
@@ -25,9 +25,14 @@ task execution. Preserve retained worktrees/branches when cleanup fails.
 
 ## Lifecycle and recovery
 
-`setup` must tolerate retries in a retained directory. Transition hooks run after acceptance;
-`teardown` runs before cleanup. Failed transition hooks do not undo moves and may repeat;
-deduplicate external effects with `ENSO_EVENT_ID`. Hooks must not recursively move tasks.
+`setup` must tolerate retries in a retained directory. Transition hooks run after each move,
+including blocks; `teardown` runs before cleanup. Failed transition hooks do not undo moves
+and may repeat; deduplicate external effects with `ENSO_EVENT_ID`. Hooks must not
+recursively move tasks.
+
+Use `after:blocked` to tell people when work needs them. Every stage run that is not
+accepted blocks its task, and while the hook exists the stage job sends no alert of its own.
+Read the cause from `handoff.message` in `enso task show "$ENSO_TASK" --json`.
 
 Before replacing a workflow, stop admissions, drain runs, and inspect task stages, return
 destinations, jobs, scripts, and worktrees. Preserve history, retained work, and disabled

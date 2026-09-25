@@ -321,9 +321,15 @@ configure either process.
 ## Lifecycle scripts
 
 Task transitions and worktree lifetime are separate. Project `setup` prepares a fresh
-worktree; `hooks.after_transition` runs after every accepted move, and `hooks["after:done"]`
+worktree; `hooks.after_transition` runs after every move, and `hooks["after:done"]`
 (or another stage name) reacts to that destination. `hooks.teardown` runs before worktree
 removal. Required pre-transition checks belong in the stage's `checks` array.
+
+`hooks["after:blocked"]` is where a project tells people that work needs them. Every stage
+run that is not accepted blocks its task with the cause, so the hook sees agent blocks,
+refused handoffs, and failed runs alike. The cause is `handoff.message` in
+`enso task show "$ENSO_TASK" --json`. While the hook is defined, the stage job sends no
+alert of its own for those runs ([Jobs § Alerts](jobs.md#alerts)).
 
 After-transition events are durably enqueued with the move, including CLI and dependency
 moves. They run in order after execution ownership permits it, in the project directory.

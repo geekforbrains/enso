@@ -57,11 +57,16 @@ for timeout and cancellation.
 Declare credential names in `secrets: [NAME]`, populated through `enso secret`; never put
 values in job files or prompts. All run steps receive one resolved snapshot.
 
-`notify` controls runner failure/recovery alerts, not successful results. Send requested
-results explicitly with `enso message send --to TARGET "text"`; untargeted scheduled sends
-use the configured notify destination. Manual runs suppress runner alerts, but scripts
-and agents can still send messages. Inspect `enso runs list --job WORKSPACE:JOB` and
-`enso runs show ID --json` for output, attempts, and postrun failures.
+Choose the channel by purpose:
+
+- `notify`: where runner failure/recovery alerts go; without it, the default target.
+- `enso message send --to TARGET "text"`: results the job exists to deliver. Untargeted
+  scheduled sends use the configured notify destination.
+- A project `after:blocked` hook: telling people that stage work needs them.
+
+Manual runs suppress runner alerts, but scripts and agents can still send messages. Inspect
+`enso runs list --job WORKSPACE:JOB` and `enso runs show ID --json` for output, attempts,
+and postrun failures.
 
 Newly discovered jobs wait for a future slot. `catch_up: true` runs once after missed
 slots; otherwise slots beyond `misfire_grace_seconds` (default 300) are skipped. Jobs have
@@ -78,3 +83,9 @@ The gate runs before claiming, so it has no newly assigned task. The Task block 
 the claimed scope and working directory. Project commands start beside `PROJECT.md` and
 must enter `ENSO_TASK_DIR` themselves. An agent's advance/return submits a handoff;
 execution, postrun, and workflow checks must finish before Enso accepts the transition.
+
+A run that is not accepted blocks its task with the cause: an agent block, a refused
+handoff, or a failed provider, postrun, or preparation. The project's `after:blocked` hook
+then owns the notice and the runner sends none; without the hook, the runner sends one
+`REF blocked` line with the cause. Gate and secrets failures still alert through `notify`.
+Do not also announce blocks from the prompt or postrun.

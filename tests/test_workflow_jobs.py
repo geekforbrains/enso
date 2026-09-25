@@ -343,6 +343,94 @@ async def test_explicit_block_keeps_reason_and_writer_until_provider_stops(
     assert attempts[0].exit_code == (0 if provider_status == "ok" else 1)
 
 
+REPLY = "Done: moved the task to review.\n" + "detail " * 400
+
+
+# A designed block, a refused handoff, and a real provider failure all end with the task
+# blocked by this run, so the task, not the runner, reports each one.
+@pytest.mark.parametrize(
+    ("outcome", "reason"),
+    [
+        ("block", "Needs API credentials from a person."),
+        ("no_handoff", "The run ended without submitting a handoff"),
+        ("crash", "provider crashed"),
+    ],
+)
+@pytest.mark.parametrize("hooked", [True, False])
+async def test_a_run_that_blocks_its_task_leaves_the_notice_to_the_task(
+    enso_home: Paths,
+    raw_config: dict,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    reason: str,
+    hooked: bool,
+) -> None:
+    hooks = {"after:blocked": "echo blocked"} if hooked else {}
+    config = workflow_config(enso_home, raw_config, ["work"], hooks=hooks)
+    task = tasks.create(enso_home, config, "EN", "Needs a person", actor="user:test")
+
+    async def turn(*args: object, **kwargs: object) -> ProviderTurn:
+        env = kwargs["env"]
+        assert isinstance(env, dict)
+        if outcome == "block":
+            tasks.move(
+                enso_home,
+                config,
+                task.ref,
+                "block",
+                actor=f"job:{env['ENSO_JOB']}",
+                run_id=env["ENSO_RUN_ID"],
+                message=reason,
+            )
+        if outcome == "crash":
+            return ProviderTurn("error", output=REPLY, error=reason, exit_code=1)
+        return ProviderTurn("ok", output=REPLY, exit_code=0, session_id="s1")
+
+    monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
+    transport = FakeTransport("slack")
+    runner = JobRunner(config, {"slack": transport})
+    result = await runner.run(stage_job(enso_home, config), trigger="ready")
+
+    assert result.status == "error" and result.task == task.ref
+    assert tasks.get(enso_home, task.ref).stage == "blocked"
+    delivered = [(e["name"], e["status"]) for e in workflows.event_history(enso_home, task.ref)]
+    assert delivered == ([("after:blocked", "delivered")] if hooked else [])
+    if hooked:
+        assert transport.sent == []
+        assert reason in tasks.context(enso_home, config, task.ref, env={})["handoff"]["message"]
+    else:
+        [(target, text)] = transport.sent
+        headline, body = text.split("\n", 1)
+        assert (target, headline) == ("C1", f"⚠️ [default:work] {task.ref} blocked")
+        assert body.startswith(reason) and "detail" not in body
+
+
+async def test_a_run_that_cannot_settle_its_task_still_alerts(
+    enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = workflow_config(
+        enso_home, raw_config, ["work"], hooks={"after:blocked": "echo blocked"}
+    )
+    task = tasks.create(enso_home, config, "EN", "Stuck", actor="user:test")
+
+    async def turn(*args: object, **kwargs: object) -> ProviderTurn:
+        return ProviderTurn("error", output=REPLY, error="provider crashed", exit_code=1)
+
+    async def unsettled(*args: object, **kwargs: object) -> tasks.Task:
+        raise tasks.TaskError("database is locked")
+
+    monkeypatch.setattr(runner_module.execution, "execute_turn", turn)
+    monkeypatch.setattr(runner_module.taskflow, "end", unsettled)
+    transport = FakeTransport("slack")
+    runner = JobRunner(config, {"slack": transport})
+    result = await runner.run(stage_job(enso_home, config), trigger="ready")
+
+    assert result.status == "error"
+    assert tasks.get(enso_home, task.ref).claim_run_id == result.run_id
+    [(_target, text)] = transport.sent
+    assert text.startswith("⚠️ [default:work (exit 1)]\n")
+
+
 @pytest.mark.parametrize("separate_workspaces", [False, True])
 async def test_stages_keep_task_ownership_during_simultaneous_work(
     enso_home: Paths, raw_config: dict, monkeypatch: pytest.MonkeyPatch, separate_workspaces

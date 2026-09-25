@@ -23,6 +23,12 @@ All notable changes to Enso are documented here, following
 - Task events record more for the timeline: a chat sender's name, the claiming run's kind
   and model, and a move's transaction. `enso workflow verify` records the operator who ran
   it instead of `user:verify`.
+- A stage run that blocks its task no longer sends the agent's full reply as a job error
+  alert. When the project defines `hooks["after:blocked"]`, that hook is the only notice;
+  otherwise the runner sends one `⚠️ [workspace:job] REF blocked` line with the cause.
+  This covers agent blocks, refused handoffs, and provider, postrun, or preparation failures.
+  Gate and secrets failures, and runs that could not settle their task, alert as before.
+  Run statuses are unchanged.
 
 ## [0.4.1] - 2026-09-23
 

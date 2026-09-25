@@ -931,6 +931,10 @@ class JobRunner:
             )
             return
         await self._recovered(job, config=config)
+        if result.status in ("timeout", "error") and await self._task_notice(
+            job, result, config=config
+        ):
+            return
         if result.status == "timeout":
             body = "\n".join(part for part in (result.postrun_error, result.output) if part)
             await self._send(job, f"⚠️ [{job.ref}] {result.error}", body, config=config)
@@ -945,6 +949,31 @@ class JobRunner:
                     part for part in (result.postrun_error, result.output or result.error) if part
                 )
                 await self._send(job, f"⚠️ [{job.ref} ({label})]", body, config=config)
+
+    async def _task_notice(self, job: Job, result: RunResult, *, config: Config) -> bool:
+        """Leave a failure the run settled onto its task to the task; False to alert as usual.
+
+        The task's move already records the outcome and enqueues its ``after:<stage>``
+        hook. When the project defines that hook, it owns the notice; otherwise send one
+        short line naming the task and the cause instead of the provider's output.
+        """
+        if result.task is None or job.project is None:
+            return False
+        try:
+            task = await asyncio.to_thread(tasks.get, self.paths, result.task)
+        except tasks.TaskError, OSError:
+            log.warning("could not read %s for its alert", result.task, exc_info=True)
+            return False
+        if task.claim_run_id == result.run_id:
+            return False  # settling failed, so nothing else will report this run
+        project = config.projects.get(job.project)
+        hook = f"after:{task.stage}"
+        if project is not None and project.hooks.get(hook):
+            log.info("%s %s; its %s hook owns the notice", task.ref, task.stage, hook)
+            return True
+        reason = result.error or f"exit {result.exit_code}"
+        await self._send(job, f"⚠️ [{job.ref}] {task.ref} {task.stage}", reason, config=config)
+        return True
 
     async def _alert_once(
         self,

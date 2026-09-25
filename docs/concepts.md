@@ -275,6 +275,8 @@ to carry out instructions embedded in names or messages.
    An integration stage also serializes landing into the recorded repository target.
 4. Enso accepts the transition with evidence and queues lifecycle events. Finished worktrees
    become cleanup candidates after their users finish; dirty or unmerged work is preserved.
+5. Work that is not accepted blocks the task with its cause. The project's `after:blocked`
+   hook, or a short [job alert](jobs.md#alerts) when it has none, tells a person.
 
 [Tasks](tasks.md) owns these contracts and interrupted-work recovery. A successful provider
 exit alone does not prove that a stage passed.
