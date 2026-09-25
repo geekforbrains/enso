@@ -367,6 +367,13 @@ def _git(cwd: Any, *args: str) -> str | None:
     return done.stdout.strip()[:200] if done.returncode == 0 else None
 
 
+def _evidence_link(sections: list[timeline.Section], workflow: list[dict[str, Any]]) -> str | None:
+    """The latest transaction's handoff row, when the timeline holds one to open."""
+    latest = workflow[0]["id"] if workflow else None
+    shown = {entry.transaction for section in sections for entry in section.entries}
+    return f"#transaction-{latest}" if latest and latest in shown else None
+
+
 def _worktree(paths: Paths, ref: str) -> dict[str, Any] | None:
     """Recorded ownership survives config changes and cleanup; absent records have no panel."""
     record = worktrees.lookup(paths, ref)
@@ -420,6 +427,17 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
     workflow = workflow_rows(transactions or [], live)
     worktree, worktree_error = common.attempt(partial(_worktree, paths, ref))
     names, _names_error = common.attempt(partial(_actor_names, paths, history or []))
+    sections = timeline.build(
+        history or [],
+        transactions or [],
+        lifecycle or [],
+        live,
+        project,
+        names or {},
+        base=(worktree or {}).get("base") or (project.base if project else None),
+        finished=task.finished,
+        now=datetime.now(UTC),
+    )
     return {
         "config_problems": problems,
         "alarm": common.alarm(paths),
@@ -431,7 +449,6 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "spec": files.render_markdown(task.body) if task.body else None,
         "refs": attached or [],
         "worktree": worktree,
-        "workflow": workflow,
         "workflow_notice": _workflow_notice(task, workflow),
         "handoff": ctx["handoff"] if ctx else None,
         "handoff_message": (
@@ -444,17 +461,8 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
             if ctx and ctx["recovery"] and ctx["recovery"]["run_id"] in live
             else None
         ),
-        "timeline": timeline.build(
-            history or [],
-            transactions or [],
-            lifecycle or [],
-            live,
-            project,
-            names or {},
-            base=(worktree or {}).get("base") or (project.base if project else None),
-            finished=task.finished,
-            now=datetime.now(UTC),
-        ),
+        "timeline": sections,
+        "evidence_link": _evidence_link(sections, workflow),
         "events": len(history or []),
         # The context read only feeds the handoff and the recovery notice, so it reports last;
         # without this it would fail silently and the page would simply omit both.

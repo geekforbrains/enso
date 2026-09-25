@@ -707,11 +707,22 @@
     }
 
     .steps { padding: 0 0 var(--s-4); margin: calc(-1 * var(--s-3)) 0 0; list-style: none; }
+    /* A step is a line under its handoff; a check's line is a fold that opens onto its
+       output, still inside the guide, so what it belongs to stays plain. */
     .step {
-      display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
-      align-items: start; padding: 3px var(--s-6) 3px 0; font-size: var(--text-xs);
+      font-size: var(--text-xs);
+      > .line, > details > .line {
+        display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
+        align-items: start; padding: 3px var(--s-6) 3px 0;
+      }
+      > details > summary {
+        cursor: pointer; list-style: none;
+        &::-webkit-details-marker { display: none; }
+        &:hover { background: var(--surface-2); }
+      }
+      > details[open] > summary .trail.slots .icon { transform: rotate(90deg); }
       .guide { grid-column: 2; justify-self: center; align-self: stretch; width: 1px; margin-block: -3px; background: var(--border-2); }
-      &:last-child .guide { margin-bottom: 9px; }
+      &:last-child > .line .guide, &:last-child > details:not([open]) > summary .guide { margin-bottom: 9px; }
       .body { grid-column: 3; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: var(--s-1) var(--s-4); }
       .step-head { display: flex; align-items: center; gap: var(--s-4); min-width: 0; }
       .title { font-weight: 500; }
@@ -719,6 +730,17 @@
       .detail { flex-basis: 100%; padding-left: 26px; color: var(--fg-2); overflow-wrap: anywhere; }
       .detail:empty { display: none; }
       .trail.slots { min-height: 18px; .tag { line-height: 16px; } }
+    }
+    .step-output {
+      display: grid; grid-template-columns: var(--row-cols); column-gap: var(--row-gap);
+      padding: var(--s-2) var(--s-6) var(--s-5) 0;
+      .guide { grid-row: 1 / span 2; margin-top: 0; }
+      > :not(.guide) { grid-column: 3 / -1; min-width: 0; margin-left: 26px; }
+      .evidence { margin-bottom: var(--s-3); }
+      .output {
+        max-height: 320px; padding: var(--s-4) var(--s-5); white-space: pre;
+        border: 1px solid var(--border); border-radius: var(--r); background: var(--surface-2);
+      }
     }
 
     /* The title, source, and message take fixed columns from 640px, as every event row does;
@@ -758,6 +780,7 @@
         .trail.slots { grid-column: 3 / -1; display: flex; gap: var(--s-4); justify-content: flex-start; padding-left: 26px; }
         .trail.slots > :empty { display: none; }
       }
+      .step-output > :not(.guide) { margin-left: 0; }
     }
   }
   /* The message starts where the title does, so the icon column still reads down the list. */
@@ -767,6 +790,21 @@
     > * { grid-column: 3 / -1; min-width: 0; }
     .markdown { padding: 0; font-size: var(--text-sm); line-height: 1.55; > :last-child { margin-bottom: 0; } }
     .output { padding: 0; }
+    > * + .evidence { margin-top: var(--s-5); padding-top: var(--s-5); border-top: 1px dashed var(--border); }
+    .reason {
+      margin-top: var(--s-4); padding: var(--s-4) var(--s-5); border-radius: var(--r);
+      background: var(--warning-bg); font-size: var(--text-xs); line-height: var(--lh-xs); overflow-wrap: anywhere;
+      b { color: var(--warning); font-weight: 600; }
+    }
+  }
+  /* The transaction's evidence in an opened handoff, or a check's run facts: label and
+     value pairs on one wrapping line, the evidence set off from the message above it. */
+  .evidence {
+    display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-6);
+    font-size: var(--text-xs); line-height: var(--lh-xs);
+    > div { display: flex; gap: var(--s-3); align-items: baseline; }
+    dt { color: var(--fg-3); }
+    dd { color: var(--fg); font-variant-numeric: tabular-nums; }
   }
   .task-event-meta {
     display: flex; flex-wrap: wrap; gap: var(--s-1) var(--s-5);

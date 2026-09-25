@@ -302,20 +302,23 @@ command, or a job other than the visit's own. Chat events record the sender's na
 events use the Slack directory cache, then the raw ID.
 
 A handoff is one row, not its submission, move, and acceptance. Under it, steps show each
-attempt's checks with status and duration, repairs, a landing on the target branch, and
-Enso's decision to accept or block it. Lifecycle hooks are script rows in the visit they
-fired into. A row with a message folds to its plain words, one line wide or two on a narrow
-list; opening any row shows the message as Markdown with single newlines kept as line
-breaks (terminal output stays literal), the recorded actor, a link to a retained run, and
-the exact time. The handoff message renders the same way.
+attempt's checks with status and duration, repairs, checks not yet run, a landing on the
+target branch (or a warning when Git landed but the handoff was not accepted), and Enso's
+decision to accept or block it. Lifecycle hooks are script rows in the visit they fired
+into. A row with a message folds to its plain words, one line wide or two on a narrow list;
+opening any row shows the message as Markdown with single newlines kept as line breaks
+(terminal output stays literal), the recorded actor, a link to a retained run, and the exact
+time. The handoff message renders the same way.
 
-**Workflow history** retains each transaction's handoff, candidate revision, spec/workflow
-versions, repair budget, timestamps, and run. Checks and lifecycle scripts show status,
-exit code, duration, attempt, and literal diagnostics; lifecycle events retain retry IDs.
-A hook fired by a move outside a transaction has its attempts in its timeline row instead.
-Missing evidence is never a pass, and provider success does not imply acceptance. Evidence
-survives provider-run pruning without broken links. Manual checks are labelled **Operator
-verification** and have no provider-run link.
+The timeline is also the task's evidence record. A check step opens to its exit code,
+attempt, duration, command, and complete literal output. An opened handoff adds why Enso
+stopped it, when it did, and an evidence line: the candidate revision when no step names it,
+repairs used, spec and workflow versions, when the transaction ran, what it recovers, and its
+transaction ID. A hook row opens to every delivery attempt. The page banner's **View
+evidence** opens the latest transaction's handoff row. Missing evidence is never a pass,
+and provider success does not imply acceptance. Evidence survives provider-run pruning
+without broken links. Manual checks are labelled **Operator verification** and have no
+provider-run link.
 
 The worktree panel uses the recorded path, branch, target, starting revision, and cleanup
 status. A bounded Git query counts commits ahead of that target; unavailable counts say

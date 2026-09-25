@@ -14,8 +14,12 @@ All notable changes to Enso are documented here, following
   A handoff is one row with its checks, repairs, landing, and Enso's decision beneath it,
   and lifecycle hooks appear where they fired. Rows fold long messages to a preview;
   opening one shows the message as Markdown, the recorded actor, and its run. The task
-  page's handoff message is also rendered as Markdown, and the separate lifecycle panel is
-  gone: hooks from a transaction stay in its workflow history.
+  page's handoff message is also rendered as Markdown.
+- The task page's Workflow history and Lifecycle scripts sections are gone; the timeline
+  holds their evidence. A check step opens to its complete output, exit code, and attempt,
+  and a handoff row opens to why Enso stopped it and an evidence line with its repairs,
+  spec and workflow versions, and transaction. Checks not yet run and landings that were
+  not accepted appear as steps. **View evidence** opens the latest handoff.
 - Task events record more for the timeline: a chat sender's name, the claiming run's kind
   and model, and a move's transaction. `enso workflow verify` records the operator who ran
   it instead of `user:verify`.

@@ -635,14 +635,45 @@ def transaction(board: Board) -> dict:
     }
 
 
+def submit(board: Board, transaction: dict, times: int = 1) -> None:
+    """Real in-run handoffs for EN-001; ``transaction`` then describes their transaction."""
+    started = workflows.start(board.paths, board.config, "EN-001", board.run_id)
+    for _ in range(times):
+        tasks.move(
+            board.paths,
+            board.config,
+            "EN-001",
+            "advance",
+            actor="job:dev:todo",
+            run_id=board.run_id,
+            message=transaction["message"],
+        )
+    transaction["id"] = started["id"]
+
+
+def handoff_of(page: str) -> str:
+    """The handoff row with its opened body and its steps."""
+    return (
+        timeline_of(page)
+        .split('<div class="task-event" id="transaction-', 1)[1]
+        .split('<div class="task-event"', 1)[0]
+    )
+
+
+def steps_of(page: str) -> list[str]:
+    return re.findall(r'<li class="step">.*?<span class="title">([^<]*)</span>', page, re.S)
+
+
 @pytest.mark.parametrize("status", ["submitted", "blocked", "accepted"])
-async def test_task_workflow_distinguishes_submission_checks_and_acceptance(
+async def test_task_timeline_holds_each_transaction_s_checks_and_evidence(
     client: TestClient,
     board: Board,
     transaction: dict,
     monkeypatch: pytest.MonkeyPatch,
     status: str,
 ) -> None:
+    """The handoff row carries what Workflow history held: checks, repairs, and evidence."""
+    submit(board, transaction, times=2)  # the second is the repair after a failed check
     transaction["status"] = status
     if status == "blocked":
         transaction["error"] = "Repair limit exhausted"
@@ -653,31 +684,52 @@ async def test_task_workflow_distinguishes_submission_checks_and_acceptance(
     page = await html(client, "/tasks/EN-001")
     assert '<span class="chip current">todo</span>' in page
     assert '<span class="chip current">review</span>' not in page
-    assert "Workflow history" in page and "1 transaction, newest first" in page
-    assert "candidate-revision" in page and "spec-version" in page and "workflow-version" in page
-    assert "1 of 2 allowed" in page and "attempt 1" in page and "attempt 2" in page
-    assert "Test suite failed" in page and "24 passed" in page
-    assert "Lifecycle scripts" in page and "event-123" in page
-    assert "Notification unavailable" in page
-    assert "&lt;script&gt;unsafe()&lt;/script&gt;" in page
+    assert "Workflow history" not in page and "Lifecycle scripts" not in page
+    assert f'href="#transaction-{transaction["id"]}"' in page  # the banner's "View evidence"
+    handoff = handoff_of(page)
+    decision = {
+        "submitted": "Waiting for the run to stop",
+        "blocked": "Blocked",
+        "accepted": "Accepted",
+    }[status]
+    assert steps_of(handoff) == [
+        "Unit tests check",
+        "Repair 1 of 2",
+        "Repair submitted",
+        "Unit tests check",
+        decision,
+    ]
+    # A check opens to its run facts and complete output, escaped as recorded.
+    assert "<dt>Exit</dt><dd><code>1</code></dd>" in handoff
+    assert "Test suite failed\nAssertion failed &lt;script&gt;unsafe()&lt;/script&gt;" in handoff
+    assert "24 passed" in handoff and "<dt>Attempt</dt><dd>2</dd>" in handoff
+    assert "<dt>Repairs</dt><dd>1 of 2</dd>" in handoff
+    assert "<dt>Spec</dt><dd><code>spec-ve</code></dd>" in handoff
+    assert f"<dt>Transaction</dt><dd><code>{transaction['id'][:8]}</code></dd>" in handoff
     assert "<script>unsafe()" not in page
+    assert ("Repair limit exhausted" in handoff) == (status == "blocked")
+    hook = timeline_of(page).split('<div class="task-event">')[-1]  # an untimed delivery is last
+    assert '<span class="title">after-transition hook</span>' in hook
+    assert "Notification unavailable" in hook
     if status == "submitted":
         assert "The task remains in todo until Enso accepts this handoff." in page
     assert ("Handoff accepted" in page) == (status == "accepted")
-    if status == "blocked":
-        assert "Repair limit exhausted" in page
 
 
-async def test_task_workflow_evidence_survives_a_pruned_run(
+async def test_task_timeline_evidence_survives_a_pruned_run(
     client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    transaction.update(run_id="pruned-run", status="accepted", ended_at=transaction["started_at"])
+    submit(board, transaction)
+    transaction.update(status="accepted", ended_at=transaction["started_at"])
+    transaction["checks"] = transaction["checks"][1:]
+    transaction["checks"][0]["attempt"] = 1
     monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
-    page = await html(client, "/tasks/EN-001")
-    assert "run pruned; workflow evidence retained" in page
-    assert 'href="/runs/pruned-run"' not in page
-    assert "24 passed" in page and "Handoff accepted" in page
-    assert "Operator verification" not in page
+    monkeypatch.setattr(taskviews, "_existing_runs", lambda _paths, _ids: {})
+    handoff = handoff_of(await html(client, "/tasks/EN-001"))
+    assert f'Run <span class="mono">{board.run_id}</span> pruned' in handoff
+    assert f'href="/runs/{board.run_id}"' not in handoff
+    assert "24 passed" in handoff and steps_of(handoff) == ["Unit tests check", "Accepted"]
+    assert "Operator verification" not in handoff
 
 
 async def test_operator_verification_has_no_provider_run_link_while_active_or_completed(
@@ -719,10 +771,10 @@ async def test_operator_verification_has_no_provider_run_link_while_active_or_co
         assert re.search(
             rf"<dt>Claim</dt>\s*<dd>Operator verification <code>{run_id}</code>", active
         )
-        assert f"<dt>Execution</dt><dd>Operator verification <code>{run_id}</code>" in active
+        assert f'Operator verification <span class="mono">{run_id}</span>' in timeline_of(active)
         label = taskviews.timeline.who(operator, {}, {})
         assert f'<span class="who">{label} · verify</span>' in active  # the submitted handoff
-        assert "run pruned" not in active and f'href="/runs/{run_id}"' not in active
+        assert "pruned</span>" not in active and f'href="/runs/{run_id}"' not in active
         board = await html(client, "/tasks")
         assert f'Operator verification <span class="mono">{run_id}</span>' in board
         assert "claimed by run" not in board
@@ -734,37 +786,44 @@ async def test_operator_verification_has_no_provider_run_link_while_active_or_co
     assert transaction["checks"][0]["status"] == "passed"
     assert tasks.get(enso_home, task.ref).claim_run_id is None
     completed = await html(client, f"/tasks/{task.ref}")
-    assert "Handoff accepted" in completed and "manual-check-passed" in completed
+    assert "Handoff accepted" in completed  # the banner, which links to the handoff's evidence
+    assert "manual-check-passed" in handoff_of(completed)  # the opened check's output
     assert "Operator verification" in completed
-    assert "run pruned" not in completed and f'href="/runs/{run_id}"' not in completed
+    assert "pruned</span>" not in completed and f'href="/runs/{run_id}"' not in completed
 
 
-async def test_task_workflow_shows_integration_before_acceptance(
+async def test_task_timeline_warns_when_a_landing_was_not_accepted(
     client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    submit(board, transaction)
     transaction.update(
         status="blocked",
+        checks=[],
         recovery_of="previous-transaction",
         integration={"phase": "applied", "candidate": "landed-sha", "target_sha": "old-target"},
     )
     monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
-    page = await html(client, "/tasks/EN-001")
-    assert "Git integration completed, but this handoff was not accepted" in page
-    assert "Recovery requires fresh verification" in page
-    assert "landed-sha" in page and "old-target" in page
-    assert 'href="#transaction-previous-transaction"' in page
+    handoff = handoff_of(await html(client, "/tasks/EN-001"))
+    assert steps_of(handoff) == ["Landed", "Not accepted"]
+    assert "old-target → landed-sha" in handoff
+    assert "Git landed, but Enso stopped before accepting." in handoff
+    assert "<dt>Recovers</dt><dd><code>previous</code></dd>" in handoff
 
 
-async def test_task_workflow_distinguishes_pending_checks_from_no_checks(
+async def test_task_timeline_distinguishes_pending_checks_from_no_checks(
     client: TestClient, board: Board, transaction: dict, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    transaction.update(checks=[], hooks=[], stage_definition={"checks": [{"name": "lint"}]})
+    submit(board, transaction)
+    transaction.update(
+        checks=[], hooks=[], stage_definition={"checks": [{"name": "lint", "command": "./lint"}]}
+    )
     monkeypatch.setattr(workflows, "history", lambda _paths, _ref: [transaction])
-    page = await html(client, "/tasks/EN-001")
-    assert "Not yet run: lint." in page and "No required checks configured." not in page
+    handoff = handoff_of(await html(client, "/tasks/EN-001"))
+    assert steps_of(handoff) == ["lint check", "Waiting for the run to stop"]
+    assert '<span class="tag">not yet run</span>' in handoff
     transaction.update(stage_definition={"checks": []}, status="accepted")
-    unchecked = await html(client, "/tasks/EN-001")
-    assert "No required checks configured." in unchecked and "Not yet run:" not in unchecked
+    unchecked = handoff_of(await html(client, "/tasks/EN-001"))
+    assert steps_of(unchecked) == ["Accepted"] and "No checks configured" in unchecked
 
 
 async def test_task_lifecycle_history_includes_manual_moves_and_delivery_retries(

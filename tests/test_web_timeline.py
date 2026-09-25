@@ -215,6 +215,8 @@ def test_timeline_folds_each_handoff_with_its_checks_and_enso_decision() -> None
     assert steps(handoff) == [
         ("enso", "Blocked the handoff", "", "Acceptance rule inputs changed: engine_test.go")
     ]
+    assert handoff.reason == "Acceptance rule inputs changed: engine_test.go"
+    assert handoff.transaction == "t1"
 
     assert (blocked.stage, blocked.source, blocked.duration) == ("blocked", "person", "1m 00s")
     notify = blocked.entries[0]
@@ -238,6 +240,14 @@ def test_timeline_folds_each_handoff_with_its_checks_and_enso_decision() -> None
         ("enso", "Accepted", "", "1 of 1 checks passed on 093415a"),
     ]
     assert retry.steps[0].value == "9.3s" and retry.steps[0].tag == ("ok", "passed")
+    # The check opens to everything it printed; the handoff opens to its evidence.
+    assert retry.steps[0].output == "go test ./...\nok"
+    assert retry.steps[0].facts == (
+        ("Exit", "0", True),
+        ("Attempt", "1", False),
+        ("Took", "9.3s", False),
+    )
+    assert retry.facts == (("Transaction", "t2", True),)  # the accepting step names the candidate
 
     assert rows(review) == [("person", "Advanced → merge", "Slack · Gavin")]
     assert (merge.source, merge.job) == ("enso", "tt-merge · no model")

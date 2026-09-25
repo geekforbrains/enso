@@ -8,7 +8,7 @@ import pytest
 from aiohttp.test_utils import TestServer
 from conftest import load_job, write_config, write_job
 
-from enso import db, knowledge, runs, secrets, tasks, workspaces
+from enso import db, knowledge, runs, secrets, tasks, workflows, workspaces
 from enso.config import load_config
 from enso.web.server import create_app
 
@@ -592,6 +592,41 @@ async def test_task_timeline_folds_messages_on_the_first_line(
     await summary.click()
     await expect(body).to_be_hidden()
     await expect(preview).to_be_visible()
+    await context.close()
+
+
+@pytest.fixture
+def handoff_task(enso_home, project_config):
+    """A task whose run has submitted a handoff that Enso has not yet checked."""
+    write_job(enso_home, "dev-triage")
+    job = load_job(enso_home, project_config, "dev-triage")
+    run_id = runs.start(enso_home, job, "manual", effort="high")
+    task = tasks.create(enso_home, project_config, "EN", "Check the evidence", actor="user:qa")
+    actor = "job:default:dev-triage"
+    tasks.take(enso_home, project_config, "EN", "triage", run_id=run_id, actor=actor)
+    workflows.start(enso_home, project_config, task.ref, run_id)
+    tasks.move(
+        enso_home,
+        project_config,
+        task.ref,
+        "advance",
+        actor=actor,
+        run_id=run_id,
+        message="Ready for review",
+    )
+    return task.ref
+
+
+async def test_view_evidence_opens_the_handoff_row(browser, viewer, handoff_task):
+    context = await browser.new_context(viewport={"width": 1280, "height": 700})
+    page = await context.new_page()
+    await page.goto(viewer + f"tasks/{handoff_task}")
+    handoff = page.locator(".timeline .task-event[id^='transaction-'] > details")
+    await expect(handoff).not_to_have_attribute("open", "")
+    await page.get_by_role("link", name=re.compile("View evidence")).click()
+    await expect(handoff).to_have_attribute("open", "")
+    await expect(handoff.locator(".evidence")).to_contain_text("Transaction")
+    await expect(handoff).to_be_in_viewport()
     await context.close()
 
 

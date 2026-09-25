@@ -57,9 +57,17 @@ _TITLES: dict[str, tuple[str, str, str | None]] = {
 }
 
 
+# One fact in an opened row: its label, its value, and whether the value is a literal.
+Fact = tuple[str, str, bool]
+
+
 @dataclass(frozen=True)
 class Step:
-    """One step under a handoff: a check, a repair, a landing, or Enso's decision."""
+    """One step under a handoff: a check, a repair, a landing, or Enso's decision.
+
+    A check opens to ``output``, its complete recorded output with terminal colour codes
+    removed, under ``facts`` such as its exit code and attempt.
+    """
 
     source: str
     tone: str
@@ -68,6 +76,8 @@ class Step:
     detail: str = ""
     tag: tuple[str, str] | None = None
     value: str = ""
+    output: str = ""
+    facts: tuple[Fact, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -75,7 +85,8 @@ class Entry:
     """One row: what happened, and, when the section header does not already say, who.
 
     The opened row shows ``message`` as rendered Markdown, or ``text`` as recorded when it
-    is terminal output or too large to render, and the raw actor and run it came from.
+    is terminal output or too large to render, and the raw actor and run it came from. A
+    handoff also opens to why Enso stopped it, if it did, and to its transaction's evidence.
     """
 
     at: str
@@ -91,8 +102,11 @@ class Entry:
     actor: str = ""
     run_id: str | None = None
     run: str | None = None  # ``live``, ``pruned``, or ``operator``
-    record: tuple[str, str] | None = None  # a transaction or event the row came from
+    record: tuple[str, str] | None = None  # an event the row came from
     steps: tuple[Step, ...] = ()
+    reason: str = ""
+    facts: tuple[Fact, ...] = ()
+    transaction: str = ""  # the full id, so a link can reach the handoff that holds it
 
 
 @dataclass(frozen=True)
@@ -174,6 +188,15 @@ def _span(start: str, end: str | datetime | None) -> str:
     if begun is None or ended is None:
         return ""
     return formatting.format_elapsed(max(0, int((ended - begun).total_seconds())))
+
+
+def _time(stamp: Any) -> str:
+    moment = parse_time(stamp)
+    return moment.astimezone().strftime("%H:%M:%S") if moment else ""
+
+
+def _commit(value: Any) -> bool:
+    return bool(re.fullmatch(r"[0-9a-f]{40}", str(value or "")))
 
 
 def _lines(text: str) -> list[str]:
@@ -357,7 +380,7 @@ class _Reader:
 
     def hook(self, event: dict[str, Any]) -> Entry:
         deliveries = event.get("deliveries") or []
-        last = deliveries[-1] if deliveries else {}
+        last = deliveries[-1] if deliveries else event  # the event keeps its last result too
         status = str(event.get("status") or "pending")
         tone = _RESULT_TONES.get(status, "muted")
         word = {"delivered": "passed"}.get(status, status)
@@ -401,25 +424,36 @@ class _Reader:
             tone = "warning"
         else:
             tone = "running" if status in _ACTIVE else "muted"
+        reason = handoff.blocked.message if handoff.blocked is not None else ""
+        if not reason and status == "blocked":
+            reason = str(tx.get("error") or "")
+        # Enso writes an integration's message itself; its steps say what happened.
+        message = "" if definition.get("integrate") else first.message
         return Entry(
             at=first.created_at,
             source=self.source(first, first.from_stage),
             tone=tone,
             title=title,
             who=self.who(first),
-            # Enso writes an integration's message itself; its steps say what happened.
-            preview="" if definition.get("integrate") else _preview(first.message),
-            text=first.message,
-            message=files.render_output(first.message) if first.message else None,
+            preview=_preview(message),
+            text=message,
+            message=files.render_output(message) if message else None,
             actor=first.actor,
             run_id=first.run_id,
             run=run_kind(first.run_id, self.runs),
-            record=("Transaction", str(tx.get("id", ""))[:8]) if tx.get("id") else None,
             steps=tuple(self._steps(handoff)),
+            reason=reason,
+            facts=_evidence(handoff),
+            transaction=str(tx.get("id") or ""),
         )
 
     def _steps(self, handoff: _Handoff) -> Iterator[Step]:
         """Each submission's checks, the repairs between them, then how Enso decided."""
+        yield from self._attempts(handoff)
+        yield from self._landing(handoff)
+        yield from self._decision(handoff)
+
+    def _attempts(self, handoff: _Handoff) -> Iterator[Step]:
         tx = handoff.tx
         definition = tx.get("stage_definition") or {}
         commands = {
@@ -428,7 +462,6 @@ class _Reader:
         }
         checks = tx.get("checks") or []
         submissions = [handoff.first, *handoff.resubmits]
-        limit = tx.get("max_repairs", len(submissions))
         for number, submission in enumerate(submissions, 1):
             if number > 1:
                 yield Step(
@@ -439,29 +472,54 @@ class _Reader:
                     detail=_preview(submission.message),
                     value=clock(submission.created_at),
                 )
-            for check in checks:
-                if check.get("attempt", 1) == number:
-                    yield _check(check, commands)
+            ran = [check for check in checks if check.get("attempt", 1) == number]
+            yield from (_check(check, commands) for check in ran)
             if number < len(submissions):
                 yield Step(
                     "enso",
                     "warning",
-                    f"Repair {number} of {limit}",
+                    f"Repair {number} of {tx.get('max_repairs', number)}",
                     detail="Sent the failure back to the run",
                 )
-        if integration := tx.get("integration"):
-            landed = (
-                f"{_short(integration.get('target_sha'))} → {_short(integration.get('candidate'))}"
+            elif tx.get("status") in ("submitted", "checking"):
+                names = {check.get("name") for check in ran}
+                for name, command in commands.items():
+                    if name not in names:
+                        yield Step(
+                            "script",
+                            "muted",
+                            f"{name} check",
+                            who=command,
+                            tag=("muted", "not yet run"),
+                        )
+
+    def _landing(self, handoff: _Handoff) -> Iterator[Step]:
+        integration = handoff.tx.get("integration") or {}
+        if not integration:
+            return
+        landed = f"{_short(integration.get('target_sha'))} → {_short(integration.get('candidate'))}"
+        if integration.get("phase") == "applied":
+            where = f"Landed on {self.base}" if self.base else "Landed"
+            yield Step(
+                "enso", "ok", where, detail=landed, value=clock(integration.get("applied_at"))
             )
-            if integration.get("phase") == "applied":
-                where = f"Landed on {self.base}" if self.base else "Landed"
-                yield Step(
-                    "enso", "ok", where, detail=landed, value=clock(integration.get("applied_at"))
-                )
-            else:
-                yield Step("enso", "warning", "Landing started", detail=landed)
+        else:
+            yield Step("enso", "warning", "Landing started", detail=landed)
+        if handoff.accepted is None and handoff.tx.get("status") not in _ACTIVE:
+            # Git already moved; recovery must recheck the landed work before accepting it.
+            yield Step(
+                "enso",
+                "warning",
+                "Not accepted",
+                detail="Git landed, but Enso stopped before accepting. Recovery rechecks "
+                "the landed work against the target before accepting it.",
+            )
+
+    def _decision(self, handoff: _Handoff) -> Iterator[Step]:
+        tx = handoff.tx
         status = tx.get("status")
-        last = [check for check in checks if check.get("attempt", 1) == len(submissions)]
+        attempts = 1 + len(handoff.resubmits)
+        last = [check for check in tx.get("checks") or [] if check.get("attempt", 1) == attempts]
         if handoff.accepted is not None:
             yield Step(
                 "enso",
@@ -470,6 +528,10 @@ class _Reader:
                 detail=self._verdict(tx, last),
                 value=clock(handoff.accepted.created_at),
             )
+        elif status == "accepted":  # accepted before its event was read
+            yield Step("enso", "ok", "Accepted", detail=self._verdict(tx, last))
+        elif tx.get("integration") and status not in _ACTIVE:
+            return  # the landing's own warning says what is left to do
         elif handoff.blocked is not None:
             yield Step(
                 "enso",
@@ -490,7 +552,7 @@ class _Reader:
             yield Step(
                 "enso",
                 "warning",
-                f"Repair {len(submissions)} of {limit}",
+                f"Repair {attempts} of {tx.get('max_repairs', attempts)}",
                 detail="Waiting for a new handoff",
             )
         elif status == "checking" and not any(check.get("status") == "running" for check in last):
@@ -517,6 +579,15 @@ def _check(check: dict[str, Any], commands: Mapping[Any, str]) -> Step:
     else:
         lines = _lines(str(check.get("error") or "")) or _lines(str(check.get("output") or ""))[-1:]
         detail = lines[0] if lines else ""
+    recorded = "\n".join(
+        _ANSI.sub("", str(check.get(key) or "")).rstrip() for key in ("error", "output")
+    ).strip("\n")
+    took = "" if status == "running" else _seconds(check.get("duration_ms"))
+    code = check.get("exit_code")
+    facts: list[Fact] = [("Exit", "-" if code is None else str(code), True)]
+    facts.append(("Attempt", str(check.get("attempt", 1)), False))
+    if took:
+        facts.append(("Took", took, False))
     return Step(
         "script",
         tone,
@@ -524,8 +595,38 @@ def _check(check: dict[str, Any], commands: Mapping[Any, str]) -> Step:
         who=commands.get(check.get("name"), ""),
         detail=detail,
         tag=(tone, status),
-        value="" if status == "running" else _seconds(check.get("duration_ms")),
+        value=took,
+        output=recorded or ("Running…" if status == "running" else "No output recorded."),
+        facts=tuple(facts),
     )
+
+
+def _evidence(handoff: _Handoff) -> tuple[Fact, ...]:
+    """What Workflow history used to hold: the transaction's inputs, budget, and span.
+
+    The candidate is left out when Enso's accepting step already names it.
+    """
+    tx = handoff.tx
+    if not tx:
+        return ()
+    attempts = 1 + len(handoff.resubmits)
+    checked = any(check.get("attempt", 1) == attempts for check in tx.get("checks") or [])
+    facts: list[Fact] = []
+    candidate = tx.get("candidate")
+    if _commit(candidate) and not (checked and handoff.accepted is not None):
+        facts.append(("Candidate", str(candidate)[:7], True))
+    if "max_repairs" in tx:
+        facts.append(("Repairs", f"{tx.get('repairs', 0)} of {tx['max_repairs']}", False))
+    for label, key in (("Spec", "spec_hash"), ("Workflow", "workflow_hash")):
+        if tx.get(key):
+            facts.append((label, str(tx[key])[:7], True))
+    if tx.get("started_at"):
+        ended = _time(tx.get("ended_at")) or "in progress"
+        facts.append(("Ran", f"{_time(tx['started_at'])} → {ended}", False))
+    if tx.get("recovery_of"):
+        facts.append(("Recovers", str(tx["recovery_of"])[:8], True))
+    facts.append(("Transaction", str(tx.get("id", ""))[:8], True))
+    return tuple(facts)
 
 
 def _folded_moves(events: list[tasks.TaskEvent]) -> set[int]:

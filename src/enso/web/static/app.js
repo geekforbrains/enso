@@ -232,6 +232,17 @@
     });
   }
 
+  // -- Linked folds ------------------------------------------------------------
+
+  // A link to a folded row, such as the task page's "View evidence", opens that row.
+  // Without the script the link still scrolls to it, and the row's steps show the outcome.
+  function openLinkedFold() {
+    var id = decodeURIComponent(location.hash.slice(1));
+    var target = id && document.getElementById(id);
+    var fold = target && (target.tagName === "DETAILS" ? target : target.querySelector("details"));
+    if (fold) fold.open = true;
+  }
+
   // -- Keyboard ----------------------------------------------------------------
 
   // `/` puts the cursor in the page's search field, the way it does on GitHub; the hint
@@ -253,6 +264,8 @@
 
   document.addEventListener("DOMContentLoaded", function () {
     setupSearchShortcut();
+    openLinkedFold();
+    window.addEventListener("hashchange", openLinkedFold);
     Array.prototype.slice.call(document.querySelectorAll("[data-folder-context]")).forEach(setupFolderContext);
     Array.prototype.slice.call(document.querySelectorAll("[data-filterable]")).forEach(setupFilterable);
     Array.prototype.slice.call(document.querySelectorAll("table[data-sortable]")).forEach(setupSortable);

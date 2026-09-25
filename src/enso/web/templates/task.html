@@ -1,6 +1,5 @@
 {% extends "base.html" %}
 {% import "_macros.html" as m %}
-{% import "_workflow.html" as w %}
 {% from "_icons.html" import icon %}
 {% block title %}{{ ref }}{% if task %} · {{ task.title }}{% endif %}{% endblock %}
 {% block content %}
@@ -10,7 +9,7 @@
 {% call m.phead(now) %}<span class="mono">{{ task.ref }}</span> {{ task.title }}{% if task.attention %} {{ m.tag('warning', 'needs attention') }}{% endif %}{% endcall %}
 
 {% if workflow_notice %}
-{{ m.verdict(workflow_notice.tone, '✓' if workflow_notice.status == 'accepted' else '!', workflow_notice.label, workflow_notice.why, '#workflow', 'View evidence') }}
+{{ m.verdict(workflow_notice.tone, '✓' if workflow_notice.status == 'accepted' else '!', workflow_notice.label, workflow_notice.why, evidence_link, 'View evidence') }}
 {% endif %}
 
 {% if recovery %}
@@ -58,11 +57,6 @@
 </div>
 {% endif %}
 
-{% if workflow %}
-<div class="shead" id="workflow"><h2>Workflow history</h2><span class="right">{{ workflow|length }} transaction{{ 's' if workflow|length != 1 }}, newest first</span></div>
-{% for entry in workflow %}{{ w.transaction(entry) }}{% endfor %}
-{% endif %}
-
 <div class="shead"><h2>Spec</h2></div>
 <div class="panel">
   {% if spec %}
@@ -100,6 +94,18 @@
 {% macro result(item) -%}
 {% if item %}<span class="tag{{ ' tag-' ~ item[0] if item[0] != 'muted' }}">{{ item[1] }}</span>{% endif %}
 {%- endmacro %}
+{% macro facts(items) -%}
+<dl class="evidence">{% for label, value, literal in items %}<div><dt>{{ label }}</dt><dd>{% if literal %}<code>{{ value }}</code>{% else %}{{ value }}{% endif %}</dd></div>{% endfor %}</dl>
+{%- endmacro %}
+{% macro step_line(step, chevron=False) -%}
+<span class="guide"></span>
+<span class="body">
+  <span class="step-head">{{ source(step.source, step.tone, small=True) }}<span class="title">{{ step.title }}</span></span>
+  <span class="who">{{ step.who }}</span>
+  <span class="detail">{{ step.detail }}</span>
+</span>
+{{ trail(step.tag, step.value, chevron=chevron) }}
+{%- endmacro %}
 {% macro trail(tag, value, chevron=False) -%}
 <span class="trail slots"><span>{{ result(tag) }}</span><span>{{ value }}</span><span>{% if chevron %}{{ icon('chevron-right', 14) }}{% endif %}</span></span>
 {%- endmacro %}
@@ -114,7 +120,7 @@
     {{ trail(none, section.duration) }}
   </div>
   {% for entry in section.entries %}
-  <div class="task-event">
+  <div class="task-event"{% if entry.transaction %} id="transaction-{{ entry.transaction }}"{% endif %}>
     <details class="fold">
       <summary class="row">
         <span class="at">{{ m.time(entry.at) }}</span>
@@ -129,6 +135,8 @@
       </summary>
       <div class="task-event-body">
         {% if entry.message %}<div class="markdown">{{ entry.message }}</div>{% elif entry.text %}<pre class="output bare" tabindex="0">{{ entry.text }}</pre>{% endif %}
+        {% if entry.reason %}<p class="reason"><b>Why Enso stopped it.</b> {{ entry.reason }}</p>{% endif %}
+        {% if entry.facts %}{{ facts(entry.facts) }}{% endif %}
         <p class="task-event-meta">
           {%- if entry.actor %}<span>Recorded as <code>{{ entry.actor }}</code></span>{% endif %}
           {%- if entry.run == 'live' %}<a href="/runs/{{ entry.run_id|urlencode }}">Open run <span class="mono">{{ entry.run_id }}</span></a>
@@ -143,13 +151,18 @@
     <ol class="steps" aria-label="How Enso judged this handoff">
       {% for step in entry.steps %}
       <li class="step">
-        <span class="guide"></span>
-        <span class="body">
-          <span class="step-head">{{ source(step.source, step.tone, small=True) }}<span class="title">{{ step.title }}</span></span>
-          <span class="who">{{ step.who }}</span>
-          <span class="detail">{{ step.detail }}</span>
-        </span>
-        {{ trail(step.tag, step.value) }}
+        {% if step.output %}
+        <details>
+          <summary class="line">{{ step_line(step, chevron=True) }}</summary>
+          <div class="step-output">
+            <span class="guide"></span>
+            {{ facts(step.facts + ((('Command', step.who, True),) if step.who else ())) }}
+            <pre class="output bare" tabindex="0">{{ step.output }}</pre>
+          </div>
+        </details>
+        {% else %}
+        <div class="line">{{ step_line(step) }}</div>
+        {% endif %}
       </li>
       {% endfor %}
     </ol>
