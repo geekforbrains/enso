@@ -760,7 +760,8 @@ def _section(reader: _Reader, stay: _Visit, duration: str) -> Section:
     entries = []
     for item in stay.items:
         entry = reader.handoff(item) if isinstance(item, _Handoff) else item
-        if entry.source != "script" and (entry.actor == owner or _enso(entry.actor)):
+        # A script row's source is its command, which the header never says.
+        if entry.actor == owner or (_enso(entry.actor) and entry.source != "script"):
             entry = replace(entry, who="")
         if entry.title == "Starting work" and not shared:
             entry = replace(entry, preview=_job_label(entry.actor, reader.execution(entry.run_id)))

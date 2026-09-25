@@ -19,7 +19,7 @@ and `workflow` commands. [Configuration](configuration.md#projects) owns `PROJEC
 | after | A task this one waits on while blocked; `add --after` starts it blocked |
 | from | The task this one was discovered in |
 | claim | The run holding the task, its actor, and when; empty when nobody holds it |
-| timeline | Events, newest first: `created`, `taken`, `released`, `moved`, `edited`, `noted`, `ref`; each with its actor, run id, message, and payload |
+| timeline | Events, newest first: `created`, `taken`, `released`, `moved`, `edited`, `noted`, `ref`, the workflow's `submitted`, `accepted`, `rules_approved`, `workflow_reset`, and `workflow_recovered`, and the worktree's `worktree_setup`, `worktree_adopted`, `worktree_teardown`, `worktree_removed`, and `worktree_cleanup`; each with its actor, run id, message, and payload |
 | refs | Evidence attached to the task: a `commit`, `path`, `url`, `page`, or any lowercase kind, with an opaque value |
 
 Tasks, events, refs, workflow transactions, check results, and lifecycle deliveries are never pruned. Finished tasks (`done` and `cancelled`) are hidden

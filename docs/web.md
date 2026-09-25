@@ -117,8 +117,9 @@ Lists share the `.row` grid, spacing tokens, and panel separators. Event slots a
 
 - The dot is the only row status indicator. Tags are for additional information, such as
   workspace finding counts; headings and detail pages may use status tags. A task timeline
-  row replaces its dot with a source icon in the dot's colours, and a check or hook row adds
-  its result as a tag; its trail keeps tag, value, and chevron slots at fixed widths.
+  row replaces its dot with a source icon in the dot's colours; a script row adds its result
+  as a tag, and a note that needs attention says so. Its trail keeps tag, value, and chevron
+  slots at fixed widths.
 - Error messages belong on the destination page, except in finding rows.
 - Supporting facts occupy one clipped line. Above 640px of list width, title and facts
   share a line with aligned title columns; below it, facts sit under the title.
@@ -295,8 +296,8 @@ stage, when it was entered, how long the task stayed, and, when one job worked i
 and its model (`tt-build · claude opus · xhigh effort`, or `no model` for an integration or
 command run). Every event is one row with a fixed verb, such as Task created, Starting work,
 Added note, Commit `093415a`, or Handoff → review. The row's icon says who acted: a person,
-an agent (a model run), Enso applying its own rules, or a script (a project check, setup,
-teardown, or lifecycle hook); its colour is the state. The source column names only what
+an agent (a model run), Enso applying its own rules, or a script (a command stage's run or a
+project check, setup, teardown, or lifecycle hook); its colour is the state. The source column names only what
 the header and icon do not: a person (`Slack · Gavin`, `Terminal · gavin`), a script's
 command, or a job other than the visit's own. Chat events record the sender's name; older
 events use the Slack directory cache, then the raw ID.
@@ -312,10 +313,10 @@ time. The handoff message renders the same way.
 
 The timeline is also the task's evidence record. A check step opens to its exit code,
 attempt, duration, command, and complete literal output. An opened handoff adds why Enso
-stopped it, when it did, and an evidence line: the candidate revision when no step names it,
+stopped it, if it did, and an evidence line: the candidate revision when no step names it,
 repairs used, spec and workflow versions, when the transaction ran, what it recovers, and its
 transaction ID. A hook row opens to every delivery attempt. The page banner's **View
-evidence** opens the latest transaction's handoff row. Missing evidence is never a pass,
+evidence** opens the latest transaction's handoff row, or scrolls to it without scripting. Missing evidence is never a pass,
 and provider success does not imply acceptance. Evidence survives provider-run pruning
 without broken links. Manual checks are labelled **Operator verification** and have no
 provider-run link.

@@ -334,3 +334,32 @@ def test_timeline_labels_people_and_other_jobs_but_not_enso() -> None:
     assert timeline.who("user:verify", {}, {}) == ""  # the old placeholder names nobody
     assert timeline.who("job:dev:tt-intake", {}, {}) == "Job · tt-intake"
     assert timeline.who("enso", {}, {}) == timeline.who("enso:worktrees", {}, {}) == ""
+
+
+def test_a_command_stage_names_its_job_once_and_its_commands_always() -> None:
+    """A run with no model is a script; the header still names its job, not every row."""
+    history = History()
+    history.add("created", "user:gavin", to_stage="publish")
+    history.add("taken", "job:ws:publish", "r1", payload={"execution": {"kind": "command"}})
+    history.add("noted", "job:ws:publish", "r1", message="Published")
+    history.add("noted", "job:ws:intake", message="Seen by intake")
+    history.add("worktree_teardown", "enso:worktrees", payload={"status": "passed", "output": ""})
+    (publish,) = timeline.build(
+        list(reversed(history.events)),
+        [],
+        [],
+        {},
+        None,
+        {},
+        base=None,
+        finished=False,
+        now=NOW,
+    )
+    assert (publish.source, publish.job) == ("script", "publish · no model")
+    assert rows(publish) == [
+        ("person", "Task created", "Terminal · gavin"),
+        ("script", "Starting work", ""),
+        ("script", "Added note", ""),
+        ("agent", "Added note", "Job · intake"),  # another job is named
+        ("enso", "Teardown", ""),  # no teardown command configured: Enso's own step
+    ]
