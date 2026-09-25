@@ -12,14 +12,17 @@ from typing import Any
 
 from . import db, frontmatter, jobs, locks, maintenance, tasks, workflows, worktrees
 from .config import (
+    Agent,
     Config,
     Paths,
+    ProjectConfig,
     config_lock,
     load_config,
     parse_project,
     resolve_workspace,
 )
 from .jobs.runner import acquire_lock
+from .providers import PROVIDER_CLASSES
 
 
 @dataclass(frozen=True)
@@ -27,6 +30,7 @@ class Change:
     path: Path
     before: bytes | None
     after: bytes
+    mode: int = 0o600
 
 
 def _digest(data: bytes | None) -> str | None:
@@ -45,9 +49,21 @@ def _safe_path(paths: Paths, relative: str) -> Path:
     return path
 
 
-def _change(paths: Paths, path: Path, after: bytes) -> Change:
+def _change(paths: Paths, path: Path, after: bytes, mode: int = 0o600) -> Change:
     _safe_path(paths, str(path.relative_to(paths.home)))
-    return Change(path, path.read_bytes() if path.exists() else None, after)
+    return Change(path, path.read_bytes() if path.exists() else None, after, mode)
+
+
+def _review_agent(config: Config, agent: Agent) -> dict[str, str]:
+    """A different provider reviews what another built, when one is configured."""
+    for name, provider in config.providers.items():
+        if name == agent.provider or not provider.models:
+            continue
+        levels = PROVIDER_CLASSES[name].effort_levels
+        effort = agent.effort if agent.effort in levels else "high"
+        if effort in levels:
+            return {"provider": name, "model": provider.models[0], "effort": effort}
+    return {"provider": agent.provider, "model": agent.model, "effort": agent.effort}
 
 
 def _job_text(path: Path, fields: dict[str, Any], prompt: str, config: Config) -> bytes:
@@ -96,6 +112,8 @@ def _plan(
     stages: list[str | dict],
     prompts: dict[str, str],
     *,
+    hooks: dict[str, str],
+    scripts: dict[str, str],
     development: bool,
     migrate: bool,
     base: str | None,
@@ -120,6 +138,9 @@ def _plan(
     project_document = frontmatter.read(path)
     entry = dict(project_document.fields)
     entry.update(stages=stages, max_concurrency=3 if development else 1)
+    if hooks:
+        # The project's own hooks win; the preset only fills in the ones it lacks.
+        entry["hooks"] = {**hooks, **dict(entry.get("hooks") or {})}
     if base is not None:
         entry["base"] = base
     if worktree_root is not None:
@@ -158,29 +179,10 @@ def _plan(
             job.path,
             _job_text(job.path, fields, document.body or "Archived workflow stage.", changed),
         )
+    changes.update(_script_changes(paths, paths.project(project.workspace, key), entry, scripts))
     targets = []
-    for name in names:
-        path = paths.workspace_jobs(project.workspace) / f"{key.lower()}-{name}" / "JOB.md"
-        if path.exists() and path not in {job.path for job in old_jobs}:
-            raise ValueError(
-                f"preserving existing {path}; choose another job name or edit it directly"
-            )
-        fields = {
-            "name": f"{project.name}: {name}",
-            "project": key,
-            "stage": name,
-            "enabled": False,
-            "timeout": 1800,
-        }
-        if name != "integrate":
-            workspace = config.workspaces.get(project.workspace)
-            agent = workspace.agent if workspace and workspace.agent else config.defaults
-            fields["agent"] = {
-                "provider": agent.provider,
-                "model": agent.model,
-                "effort": agent.effort,
-            }
-        changes[path] = _change(paths, path, _job_text(path, fields, prompts[name], changed))
+    for path, change in _job_changes(paths, config, replacement, prompts, old_jobs, changed):
+        changes[path] = change
         targets.append(str(path))
     project_path = paths.project(project.workspace, key) / "PROJECT.md"
     changes[project_path] = _change(
@@ -199,6 +201,61 @@ def _plan(
     )
 
 
+def _script_changes(
+    paths: Paths, directory: Path, entry: dict[str, Any], scripts: dict[str, str]
+) -> dict[Path, Change]:
+    """Executable preset scripts that a hook runs; never replace a different existing file."""
+    changes = {}
+    for name, text in scripts.items():
+        if f"./{name}" not in dict(entry.get("hooks") or {}).values():
+            continue  # the project's own hooks replaced the one that runs it
+        script = directory / name
+        if script.exists() and script.read_bytes() != text.encode():
+            raise ValueError(f"preserving existing {script}; remove it or edit its hooks")
+        changes[script] = _change(paths, script, text.encode(), 0o700)
+    return changes
+
+
+def _job_changes(
+    paths: Paths,
+    config: Config,
+    project: ProjectConfig,
+    prompts: dict[str, str],
+    old_jobs: list[jobs.Job],
+    changed: Config,
+) -> list[tuple[Path, Change]]:
+    """One disabled job per stage a job serves: models for agent stages, none for the engine's."""
+    workspace = config.workspaces.get(project.workspace)
+    agent = workspace.agent if workspace and workspace.agent else config.defaults
+    retired = {job.path for job in old_jobs}
+    result = []
+    for stage in project.stages:
+        if stage.human:
+            continue  # a person moves it; no job serves a human stage
+        path = paths.workspace_jobs(project.workspace) / f"{project.key.lower()}-{stage.name}"
+        path = path / "JOB.md"
+        if path.exists() and path not in retired:
+            raise ValueError(
+                f"preserving existing {path}; choose another job name or edit it directly"
+            )
+        fields: dict[str, Any] = {
+            "name": f"{project.name}: {stage.name}",
+            "project": project.key,
+            "stage": stage.name,
+            "enabled": False,
+            "timeout": 3600 if stage.checks and not stage.integrate else 1800,
+        }
+        if not stage.integrate and stage.command is None:
+            fields["agent"] = (
+                _review_agent(config, agent)
+                if stage.name == "review"
+                else {"provider": agent.provider, "model": agent.model, "effort": agent.effort}
+            )
+        text = _job_text(path, fields, prompts[stage.name], changed)
+        result.append((path, _change(paths, path, text)))
+    return result
+
+
 def _record(paths: Paths, changes: list[Change], result: dict[str, Any]) -> tuple[Path, dict]:
     operation = uuid.uuid4().hex
     directory = paths.runtime_dir / "workflow-migrations" / operation
@@ -213,6 +270,7 @@ def _record(paths: Paths, changes: list[Change], result: dict[str, Any]) -> tupl
             {
                 "path": str(change.path.relative_to(paths.home)),
                 "snapshot": name,
+                "mode": change.mode,
                 "before": _digest(change.before),
                 "after": _digest(change.after),
             }
@@ -272,7 +330,7 @@ def _apply(paths: Paths, directory: Path, manifest: dict) -> dict[str, Any]:
         path = _safe_path(paths, entry["path"])
         desired = (directory / f"{entry['snapshot']}.after").read_bytes()
         if not path.exists() or _digest(path.read_bytes()) != entry["after"]:
-            maintenance.write_bytes(path, desired)
+            maintenance.write_bytes(path, desired, entry.get("mode", 0o600))
     manifest["status"] = "complete"
     maintenance.write_json(directory / "manifest.json", manifest)
     paths.maintenance.unlink()
@@ -289,6 +347,8 @@ def initialize(
     stages: list[str | dict],
     prompts: dict[str, str],
     *,
+    hooks: dict[str, str] | None = None,
+    scripts: dict[str, str] | None = None,
     development: bool,
     migrate: bool,
     base: str | None,
@@ -321,6 +381,8 @@ def initialize(
             key,
             stages,
             prompts,
+            hooks=hooks or {},
+            scripts=scripts or {},
             development=development,
             migrate=migrate,
             base=base,

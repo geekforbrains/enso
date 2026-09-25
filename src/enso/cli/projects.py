@@ -6,7 +6,7 @@ from pathlib import Path
 
 import typer
 
-from .. import frontmatter, maintenance, tasks
+from .. import frontmatter, maintenance
 from ..config import (
     ConfigError,
     Paths,
@@ -65,8 +65,11 @@ def project_add(
     name: str = typer.Option(..., "--name"),
     workspace: str | None = WORKSPACE,
     repo: Path | None = REPO,
-    stages: str | None = typer.Option(None, "--stages", help="Comma-separated: a,b,c:human."),
-    flow: str | None = typer.Option(None, "--flow", help=f"A preset: {', '.join(tasks.FLOWS)}."),
+    stages: str = typer.Option(
+        "work",
+        "--stages",
+        help="Comma-separated: a,b,c:human. For a preset with jobs, see enso workflow init.",
+    ),
     setup: str | None = typer.Option(
         None, "--setup", help="Bash command beside PROJECT.md to prepare ENSO_TASK_DIR."
     ),
@@ -76,23 +79,7 @@ def project_add(
     """Create PROJECT.md in the selected workspace; validate before writing."""
     paths = Paths.from_env()
     load(paths, as_json=as_json)
-    if (stages is None) == (flow is None):
-        fail(["give --stages or --flow, not both and not neither"], as_json=as_json)
-    if flow == "dev":
-        fail(
-            [
-                "create the project with --flow basic, then use enso workflow init KEY "
-                "--preset dev --lint COMMAND --test COMMAND for the development workflow"
-            ],
-            as_json=as_json,
-        )
-    if flow is not None and flow not in tasks.FLOWS:
-        fail([f"--flow must be one of {', '.join(tasks.FLOWS)}"], as_json=as_json)
-    names = (
-        list(tasks.FLOWS[flow])
-        if flow is not None
-        else [item.strip() for item in (stages or "").split(",") if item.strip()]
-    )
+    names = [item.strip() for item in stages.split(",") if item.strip()]
     problems: list[str] = []
     parse_stages(names, "--stages", problems)
     if problems:

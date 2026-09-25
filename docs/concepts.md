@@ -165,7 +165,7 @@ spec, stage, and append-only timeline; built-in holding and terminal stages are 
 An agent submits a handoff. Enso retains ownership until execution stops and any required
 checks pass against the submitted candidate. It then accepts the transition and records
 evidence. A single unchecked `work → done` pipeline is valid; the development preset adds
-planning, checks, review, and integration.
+a checked build, a second model's review, a person's QA, and a merge Enso runs itself.
 
 Git projects create task worktrees when needed and record their target branch. Different
 tasks may execute concurrently, while each worktree has one owner and integration is

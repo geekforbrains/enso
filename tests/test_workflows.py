@@ -393,7 +393,7 @@ async def test_conventional_go_and_python_tests_preserve_existing_acceptance_inp
 
 
 @pytest.mark.asyncio
-async def test_integration_checks_rule_inputs_after_rebasing(
+async def test_integration_counts_only_the_candidates_own_rule_changes(
     enso_home: Paths,
     project_config: Config,
     repo: Path,
@@ -408,11 +408,193 @@ async def test_integration_checks_rule_inputs_after_rebasing(
     claim(enso_home, config, task.ref, "r1")
     cwd = worktrees.worktree_path(enso_home, config.projects["EN"], task.ref)
     commit_file(cwd, "feature.py", "feature = True\n", "feat: candidate")
-    target = commit_file(repo, "pytest.ini", "[pytest]\n", "chore: change upstream harness")
+    # The target moved on with its own harness change: trusted, and not this candidate's.
+    commit_file(repo, "pytest.ini", "[pytest]\n", "chore: change upstream harness")
     submit(enso_home, config, task.ref, "r1")
     result = await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
-    assert result.status == "failed" and "rule" in result.feedback.lower()
-    assert git(repo, "rev-parse", "HEAD").strip() == target
+    assert result.status == "accepted", result.feedback
+    assert (repo / "feature.py").exists() and tasks.get(enso_home, task.ref).stage == "done"
+
+
+def edited_test_project(paths: Paths, config: Config, repo: Path, stages: list) -> Config:
+    commit_file(repo, "test_health.py", "original assertion\n", "test: acceptance input")
+    return configure(
+        paths,
+        config,
+        stages,
+        repo=repo,
+        hooks={"after_transition": 'echo "$ENSO_TO_STAGE" >> moves.log'},
+    )
+
+
+def edit_existing_test(paths: Paths, config: Config, ref: str) -> None:
+    cwd = worktrees.worktree_path(paths, config.projects["EN"], ref)
+    commit_file(cwd, "test_health.py", "assertion for the new behaviour\n", "test: update")
+
+
+@pytest.mark.asyncio
+async def test_a_landing_project_asks_once_at_integration_and_approval_lands_it(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    checks = [{"name": "test", "command": "true"}]
+    config = edited_test_project(
+        enso_home,
+        project_config,
+        repo,
+        [
+            {"name": "build", "checks": checks},
+            {"name": "merge", "integrate": True, "checks": checks},
+        ],
+    )
+    task = held(enso_home, config)
+    edit_existing_test(enso_home, config, task.ref)
+    submit(enso_home, config, task.ref)
+    # Build does not stop for the edit: a project that lands work guards its rules there.
+    built = await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
+    assert built.status == "accepted" and tasks.get(enso_home, task.ref).stage == "merge"
+    claim(enso_home, config, task.ref, "r2")
+    submit(enso_home, config, task.ref, "r2")
+    refused = await workflows.evaluate(enso_home, config, task.ref, "r2", dict(os.environ))
+    assert refused.status == "failed" and "test_health.py" in refused.feedback
+    workflows.interrupt(enso_home, config, task.ref, "r2", refused.feedback)  # the runner's settle
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    stopped = tasks.get(enso_home, task.ref)
+    assert (stopped.stage, stopped.previous_stage) == ("blocked", "merge")
+    block = next(e for e in tasks.events(enso_home, task.ref) if e.kind == "moved")
+    assert block.payload["block"] == "approval"
+
+    result = await workflows.approve_rules(enso_home, config, task.ref, "Matches the new feature")
+    assert result is not None and result.status == "accepted", result
+    assert tasks.get(enso_home, task.ref).stage == "done"
+    assert git(repo, "show", "HEAD:test_health.py") == "assertion for the new behaviour\n"
+    landed = next(e for e in tasks.events(enso_home, task.ref) if e.kind == "moved")
+    assert (landed.actor, landed.message) == ("job:test", "Candidate ready")  # the held handoff
+    # The resume back into merge was internal: hooks saw the block, then the landing.
+    moves = (enso_home.project("default", "EN") / "moves.log").read_text().split()
+    assert moves == ["merge", "blocked", "done"]
+
+
+@pytest.mark.asyncio
+async def test_approval_never_releases_a_task_a_person_blocked_again(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    checks = [{"name": "test", "command": "true"}]
+    config = edited_test_project(
+        enso_home,
+        project_config,
+        repo,
+        [
+            {"name": "build", "checks": checks},
+            {"name": "merge", "integrate": True, "checks": checks},
+        ],
+    )
+    task = held(enso_home, config)
+    edit_existing_test(enso_home, config, task.ref)
+    submit(enso_home, config, task.ref)
+    await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
+    claim(enso_home, config, task.ref, "r2")
+    submit(enso_home, config, task.ref, "r2")
+    refused = await workflows.evaluate(enso_home, config, task.ref, "r2", dict(os.environ))
+    workflows.interrupt(enso_home, config, task.ref, "r2", refused.feedback)
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    for move, message in (("resume", ""), ("block", "Hold until the release freeze ends")):
+        tasks.move(
+            enso_home, config, task.ref, move, actor="user:test", run_id=None, message=message
+        )
+        await workflows.drain_events(enso_home, config, ref=task.ref)
+    assert await workflows.approve_rules(enso_home, config, task.ref, "Edit is sound") is None
+    stopped = tasks.get(enso_home, task.ref)
+    assert stopped.stage == "blocked" and stopped.claim_run_id is None
+    assert git(repo, "show", "HEAD:test_health.py") == "original assertion\n"
+
+
+@pytest.mark.asyncio
+async def test_approving_at_a_human_stage_lets_changed_tests_land_without_stopping(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    checks = [{"name": "test", "command": "true"}]
+    config = edited_test_project(
+        enso_home,
+        project_config,
+        repo,
+        [
+            {"name": "build", "checks": checks},
+            {"name": "qa", "human": True},
+            {"name": "merge", "integrate": True, "checks": checks},
+        ],
+    )
+    task = held(enso_home, config)
+    edit_existing_test(enso_home, config, task.ref)
+    submit(enso_home, config, task.ref)
+    assert (
+        await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
+    ).status == ("accepted")
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    assert await workflows.approve_rules(enso_home, config, task.ref, "Reviewed in QA") is None
+    tasks.move(
+        enso_home, config, task.ref, "advance", actor="user:test", run_id=None, message="QA passed"
+    )
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    claim(enso_home, config, task.ref, "r2")
+    submit(enso_home, config, task.ref, "r2")
+    result = await workflows.evaluate(enso_home, config, task.ref, "r2", dict(os.environ))
+    assert result.status == "accepted", result.feedback
+    assert git(repo, "show", "HEAD:test_health.py") == "assertion for the new behaviour\n"
+
+
+@pytest.mark.asyncio
+async def test_without_integration_each_checked_stage_guards_and_approval_continues_it(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    config = edited_test_project(
+        enso_home,
+        project_config,
+        repo,
+        [{"name": "work", "checks": [{"name": "test", "command": "true"}]}, "review"],
+    )
+    task = held(enso_home, config)
+    edit_existing_test(enso_home, config, task.ref)
+    submit(enso_home, config, task.ref)
+    refused = await workflows.evaluate(enso_home, config, task.ref, "r1", dict(os.environ))
+    assert refused.status == "failed" and "approve-rules" in refused.feedback
+    workflows.interrupt(enso_home, config, task.ref, "r1", refused.feedback)
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    with pytest.raises(tasks.TaskError, match="describe"):
+        await workflows.approve_rules(enso_home, config, task.ref, " ")
+    result = await workflows.approve_rules(enso_home, config, task.ref, "Edit is sound")
+    assert result is not None and result.status == "accepted", result
+    assert tasks.get(enso_home, task.ref).stage == "review"
+    kinds = [e.kind for e in reversed(tasks.events(enso_home, task.ref))]
+    assert kinds[-5:] == ["rules_approved", "moved", "submitted", "moved", "accepted"]
+    handoff = tasks.context(enso_home, config, task.ref, env={})["handoff"]
+    assert (handoff["actor"], handoff["message"]) == ("job:test", "Candidate ready")
+
+
+@pytest.mark.asyncio
+async def test_hooks_get_the_move_and_act_for_enso_rather_than_the_caller(
+    enso_home: Paths, project_config: Config, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    config = configure(
+        enso_home,
+        project_config,
+        hooks={"after:blocked": 'env | grep "^ENSO_" > hook.env'},
+    )
+    task = tasks.create(enso_home, config, "EN", "Pick a colour", actor="user:test")
+    tasks.move(
+        enso_home, config, task.ref, "block", actor="user:test", run_id=None, message="Red or blue?"
+    )
+    moved = next(e for e in tasks.events(enso_home, task.ref) if e.kind == "moved")
+    assert moved.payload == {"move": "block", "block": "decision"}
+    # A chat turn that drains the queue must not lend the hook its conversation or job.
+    monkeypatch.setenv("ENSO_ORIGIN_TRANSPORT", "slack")
+    monkeypatch.setenv("ENSO_ORIGIN_CHANNEL", "C9")
+    monkeypatch.setenv("ENSO_JOB", "default:other")
+    await workflows.drain_events(enso_home, config, ref=task.ref)
+    lines = (enso_home.project("default", "EN") / "hook.env").read_text().splitlines()
+    env = dict(line.split("=", 1) for line in lines)
+    assert env["ENSO_MESSAGE"] == "Red or blue?" and env["ENSO_BLOCK_KIND"] == "decision"
+    assert env["ENSO_TASK_TITLE"] == "Pick a colour" and env["ENSO_TO_STAGE"] == "blocked"
+    assert "ENSO_ORIGIN_TRANSPORT" not in env and "ENSO_JOB" not in env
 
 
 def test_manual_progression_waits_for_lifecycle_delivery(

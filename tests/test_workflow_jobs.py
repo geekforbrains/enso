@@ -393,6 +393,8 @@ async def test_a_run_that_blocks_its_task_leaves_the_notice_to_the_task(
 
     assert result.status == "error" and result.task == task.ref
     assert tasks.get(enso_home, task.ref).stage == "blocked"
+    block = next(e for e in tasks.events(enso_home, task.ref) if e.kind == "moved")
+    assert block.payload["block"] == ("decision" if outcome == "block" else "failure")
     delivered = [(e["name"], e["status"]) for e in workflows.event_history(enso_home, task.ref)]
     assert delivered == ([("after:blocked", "delivered")] if hooked else [])
     if hooked:

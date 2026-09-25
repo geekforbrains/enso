@@ -26,3 +26,18 @@ needs to look; omit `--attention` for ordinary context.
 Record out-of-scope work separately with `enso task add TITLE --project KEY --from REF`;
 use `--backlog` unless ready and `--after REF` for a dependency. Outside stage runs, tasks
 can be edited, resumed, or dropped. A live claim cannot be forced: wait for or stop its run.
+
+## Act on a person's answer
+
+When a person answers a task notice, find its task reference, act, and reply in a line:
+
+- Answers a blocked task's question: `enso task resume REF --message "<the answer>"`.
+- Approves edited tests: read the test diff in the worktree first, then `enso workflow
+  approve-rules REF --message "<why it is sound>"`. A task blocked on it continues by itself.
+- QA passed: approve any edited tests first, then `enso task advance REF --message "QA passed"`.
+- QA found a problem: `enso task return REF --message "<what is wrong>"`.
+- Starts a parked task: `enso task advance REF --message "<the decision>"`.
+- Drops it: `enso task drop REF --message "<why>"`.
+
+For a `failure` block, read `enso task show REF` and `enso workflow show REF --json`, fix the
+cause, then resume; `enso workflow retry REF --message` restores an exhausted budget.

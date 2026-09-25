@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 
 from enso import frontmatter, tasks
 from enso.cli import app
-from enso.config import LiveConfig, load_config, parse_config, parse_stages
+from enso.config import LiveConfig, load_config, parse_config
 
 runner = CliRunner()
 
@@ -142,7 +142,7 @@ def test_project_add_preserves_config_and_refuses_overwrite(
     write_config(enso_home, raw_config)
     before = enso_home.config.read_bytes()
     monkeypatch.setenv("ENSO_WORKSPACE", "default")
-    result = invoke("add", "EN", "--name", "Enso", "--repo", str(repo), "--flow", "basic")
+    result = invoke("add", "EN", "--name", "Enso", "--repo", str(repo))
     assert result.exit_code == 0, result.output
     project = json.loads(result.stdout)
     assert project["key"] == "EN" and project["workspace"] == "default"
@@ -151,7 +151,7 @@ def test_project_add_preserves_config_and_refuses_overwrite(
     assert frontmatter.read(path).fields == {"name": "Enso", "stages": ["work"], "repo": str(repo)}
     original = path.read_bytes()
     enso_home.workspace("team").mkdir()
-    duplicate = invoke("add", "EN", "--name", "Other", "--workspace", "team", "--flow", "basic")
+    duplicate = invoke("add", "EN", "--name", "Other", "--workspace", "team")
     assert duplicate.exit_code == 1 and "already exists" in duplicate.stdout
     assert path.read_bytes() == original and not enso_home.project("team", "EN").exists()
     assert json.loads(invoke("list").stdout)[0]["key"] == "EN"
@@ -164,13 +164,13 @@ def test_project_add_requires_context_and_validates_before_writing(
 ):
     write_config(enso_home, raw_config)
     monkeypatch.chdir(enso_home.workspace("default"))
-    args = ("add", "EN", "--name", "Enso", "--flow", "basic")
+    args = ("add", "EN", "--name", "Enso")
     assert "select a workspace" in invoke(*args).stdout
-    for flags in (("--workspace", "missing"), ("--workspace", "default", "--stages", "work")):
+    for flags in (("--workspace", "missing"), ("--workspace", "default", "--stages", "Bad Stage")):
         result = invoke(*args, *flags)
         assert result.exit_code == 1
     assert not enso_home.workspace_projects("default").exists()
-    bad_key = invoke("add", "../EN", "--name", "Bad", "--flow", "basic", "--workspace", "default")
+    bad_key = invoke("add", "../EN", "--name", "Bad", "--workspace", "default")
     assert bad_key.exit_code == 1
 
 
@@ -184,21 +184,12 @@ def test_project_add_resolves_relative_repo_once(enso_home, raw_config, repo, mo
         "Enso",
         "--repo",
         repo.name,
-        "--flow",
-        "basic",
         "--workspace",
         "default",
     )
     assert result.exit_code == 0, result.output
     monkeypatch.chdir(enso_home.home)
     assert load_config(enso_home).projects["EN"].repo == repo
-
-
-@pytest.mark.parametrize("flow", tasks.FLOWS)
-def test_flow_presets_remain_valid(flow):
-    problems = []
-    assert parse_stages(list(tasks.FLOWS[flow]), "flow", problems)
-    assert not problems
 
 
 def test_task_context_and_cross_workspace_dependencies(enso_home, project_config, monkeypatch):

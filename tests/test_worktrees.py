@@ -20,6 +20,11 @@ def project_for(config: Config, repo: Path, **fields: object) -> ProjectConfig:
     return replace(config.projects["EN"], repo=repo, **fields)  # type: ignore[arg-type]
 
 
+def root(paths: Paths) -> Path:
+    """The default worktree root: ``.worktrees`` beside the project's PROJECT.md."""
+    return paths.project("default", "EN") / ".worktrees"
+
+
 def worktree_list(repo: Path) -> list[str]:
     return [
         line[len("worktree ") :]
@@ -43,7 +48,7 @@ def test_prepare_creates_once_then_reuses(
     )
     info = worktrees.prepare(enso_home, project, "EN-001")
     assert info == worktrees.WorktreeInfo(
-        repo / ".worktrees" / "EN-001", "enso/EN-001", "main", True, ()
+        root(enso_home) / "EN-001", "enso/EN-001", "main", True, ()
     )
     assert (info.path / "AGENTS.md").is_file() and (info.path / ".env").read_text() == "SECRET=1\n"
     assert (info.path / "setup.txt").read_text() == "ran\n"
@@ -59,6 +64,18 @@ def test_prepare_creates_once_then_reuses(
     # Main checkout untouched: still on main, still clean, nothing copied back.
     assert git(repo, "symbolic-ref", "--short", "HEAD").strip() == "main"
     assert git(repo, "status", "--porcelain", "--untracked-files=no") == ""
+
+
+def test_default_root_sits_with_the_project_and_out_of_a_git_home(
+    enso_home: Paths, project_config: Config, repo: Path
+) -> None:
+    git(enso_home.home, "init", "-q")
+    project = project_for(project_config, repo)
+    assert worktrees.worktree_path(enso_home, project, "EN-001") == root(enso_home) / "EN-001"
+    info = worktrees.prepare(enso_home, project, "EN-001")
+    assert info.path == root(enso_home) / "EN-001"
+    assert ".worktrees" not in git(enso_home.home, "status", "--porcelain", "-uall")
+    assert git(repo, "status", "--porcelain") == ""  # the repository never sees the checkout
 
 
 def test_prepare_attaches_an_existing_branch_and_refuses_bad_input(
@@ -83,7 +100,7 @@ def test_failing_setup_preserves_work_and_can_resume(
     project = project_for(project_config, repo, setup="echo nope >&2; exit 3")
     with pytest.raises(WorktreeError, match=r"setup failed \(exit 3\).*nope"):
         worktrees.prepare(enso_home, project, "EN-001")
-    path = repo / ".worktrees" / "EN-001"
+    path = root(enso_home) / "EN-001"
     assert path.exists()
     assert "enso/EN-001" in branches(repo)
     assert worktrees.lookup(enso_home, "EN-001")["status"] == "setup_failed"
@@ -96,7 +113,7 @@ def test_failing_setup_preserves_work_and_can_resume(
     assert (path / "setup.txt").read_text() == "recovered\n"
     assert worktrees.lookup(enso_home, "EN-001")["status"] == "ready"
     # A stale directory nobody registered is not silently adopted.
-    stale = repo / ".worktrees" / "EN-002"
+    stale = root(enso_home) / "EN-002"
     stale.mkdir(parents=True)
     (stale / "leftover").write_text("x")
     with pytest.raises(WorktreeError, match="not a registered worktree"):
@@ -163,12 +180,12 @@ def test_sweep_removes_finished_clean_worktrees_only(
         tasks.create(enso_home, project_config, "EN", title, actor=USER)
     for ref in ("EN-001", "EN-002", "EN-003", "EN-004", "EN-005"):
         worktrees.prepare(enso_home, project, ref)
-    commit_file(repo / ".worktrees" / "EN-001", "a.py", "1\n", "feat: a")
+    commit_file(root(enso_home) / "EN-001", "a.py", "1\n", "feat: a")
     worktrees.land(enso_home, project, "EN-001")
-    commit_file(repo / ".worktrees" / "EN-002", "b.py", "2\n", "feat: b")
-    (repo / ".worktrees" / "EN-002" / "README.md").write_text("unfinished\n")
-    (repo / ".worktrees" / "EN-004" / "untracked.txt").write_text("scratch\n")
-    (repo / ".worktrees" / "EN-005" / ".env").write_text("ignored\n")
+    commit_file(root(enso_home) / "EN-002", "b.py", "2\n", "feat: b")
+    (root(enso_home) / "EN-002" / "README.md").write_text("unfinished\n")
+    (root(enso_home) / "EN-004" / "untracked.txt").write_text("scratch\n")
+    (root(enso_home) / "EN-005" / ".env").write_text("ignored\n")
     for ref in ("EN-001", "EN-002"):
         for _ in range(3):
             tasks.move(
@@ -176,14 +193,14 @@ def test_sweep_removes_finished_clean_worktrees_only(
             )
     for ref in ("EN-004", "EN-005"):
         tasks.move(enso_home, project_config, ref, "drop", actor=USER, run_id=None, message="no")
-    (repo / ".worktrees" / "stray").mkdir()  # not a task reference: never touched
+    (root(enso_home) / "stray").mkdir()  # not a task reference: never touched
 
     # EN-004 is finished but holds a file no branch ever had: the sweep must not destroy it.
     # EN-005 holds only an ignored file (a copied .env), which is not work and does not count.
     assert worktrees.sweep(enso_home, project) == ["EN-001", "EN-005"]
-    remaining = sorted(p.name for p in (repo / ".worktrees").iterdir())
+    remaining = sorted(p.name for p in (root(enso_home)).iterdir())
     assert remaining == ["EN-002", "EN-003", "EN-004", "stray"]
-    assert (repo / ".worktrees" / "EN-004" / "untracked.txt").read_text() == "scratch\n"
+    assert (root(enso_home) / "EN-004" / "untracked.txt").read_text() == "scratch\n"
     assert branches(repo) == ["enso/EN-002", "enso/EN-003", "enso/EN-004", "main"]
     assert all(Path(p).name != "EN-001" for p in worktree_list(repo))
     assert worktrees.sweep(enso_home, project) == []
@@ -197,7 +214,7 @@ def test_sweep_removes_finished_clean_worktrees_only(
         assert worktrees.sweep(enso_home, project) == []
     finally:
         monkey.undo()
-    assert (repo / ".worktrees" / "EN-004" / "untracked.txt").read_text() == "scratch\n"
+    assert (root(enso_home) / "EN-004" / "untracked.txt").read_text() == "scratch\n"
     assert worktrees._unclean is original
 
 
@@ -288,7 +305,7 @@ def test_legacy_worktree_is_not_selected_adopted_or_removed(
     git(repo, "worktree", "add", "-b", "enso/EN-001", str(legacy), "main")
     before = (legacy / "README.md").read_bytes()
 
-    assert worktrees.worktree_path(enso_home, project, "EN-001") == repo / ".worktrees" / "EN-001"
+    assert worktrees.worktree_path(enso_home, project, "EN-001") == root(enso_home) / "EN-001"
     assert worktrees.sweep(enso_home, project) == []
     with pytest.raises(WorktreeError, match="already checked out elsewhere"):
         worktrees.prepare(enso_home, project, "EN-001")

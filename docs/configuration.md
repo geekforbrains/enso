@@ -412,7 +412,7 @@ that inspect repository code must explicitly enter `ENSO_TASK_DIR`.
 | `repo` | Optional Git repository directory; `~` expands |
 | `stages` | Nonempty ordered list of unique stage names or objects |
 | `base` | Optional target branch; recorded for each task worktree, never silently retargeted |
-| `worktree_root` | Default `<repo>/.worktrees`; repository-relative, absolute, `~`, or a sibling path |
+| `worktree_root` | Default `.worktrees` beside `PROJECT.md`; otherwise repository-relative, absolute, or `~` |
 | `setup` | Optional bash command run while preparing a new worktree |
 | `copy` | Optional relative repository paths; no absolute paths or `..`; see [copy safety](tasks.md#worktrees) |
 | `max_concurrency` | Positive integer limiting simultaneous project task executions; default 1 |

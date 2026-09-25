@@ -87,5 +87,6 @@ execution, postrun, and workflow checks must finish before Enso accepts the tran
 A run that is not accepted blocks its task with the cause: an agent block, a refused
 handoff, or a failed provider, postrun, or preparation. The project's `after:blocked` hook
 then owns the notice and the runner sends none; without the hook, the runner sends one
-`REF blocked` line with the cause. Gate and secrets failures still alert through `notify`.
-Do not also announce blocks from the prompt or postrun.
+`REF blocked` line with the cause. `enso workflow init --preset dev` adds that hook. Gate and
+secrets failures still alert through `notify`. Do not also announce blocks from the prompt or
+postrun.

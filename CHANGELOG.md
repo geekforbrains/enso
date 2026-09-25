@@ -29,6 +29,30 @@ All notable changes to Enso are documented here, following
   This covers agent blocks, refused handoffs, and provider, postrun, or preparation failures.
   Gate and secrets failures, and runs that could not settle their task, alert as before.
   Run statuses are unchanged.
+- `enso workflow init --preset dev` now sets up `build → review → qa → merge`. A second
+  configured provider reviews what the first built, a person tries each task's worktree in
+  the human `qa` stage, and Enso merges it. The planning stage is gone: keep tasks that
+  still need a decision in `backlog`. Prompts ask for short handoffs, and a generated
+  `notify.sh` hook sends one line when a task is blocked or ready for QA. Existing projects
+  keep their workflow until they rerun `workflow init --migrate`.
+- Task worktrees default to `.worktrees/<REF>` beside the project's `PROJECT.md` instead of
+  inside the repository, and stay out of `git status` of an Enso home kept in Git. Existing
+  tasks and an explicit `worktree_root` are unaffected. Backups of the home should skip
+  `.worktrees/`.
+- Edited tests or check files are checked once where a project lands work, at its
+  integration stage, counting only the task's own changes against the target; approving
+  before then, such as during QA, lets it land without stopping. A project without an
+  integration stage still checks at each checked stage. `enso workflow approve-rules` on a
+  task blocked on this now continues its handoff directly, keeping the original handoff for
+  the next stage, instead of needing `resume` and `verify` afterwards.
+- Every block records its kind: `decision`, `approval`, or `failure`. Lifecycle hooks
+  receive it as `ENSO_BLOCK_KIND`, with the move's `ENSO_MESSAGE` and `ENSO_TASK_TITLE`, and
+  no longer inherit the chat turn or job that happened to deliver them.
+
+### Removed
+
+- `enso project add --flow` and its `support` and `marketing` stage lists. `--stages`
+  defaults to one `work` stage, and `enso workflow init --preset` is the only preset.
 
 ## [0.4.1] - 2026-09-23
 

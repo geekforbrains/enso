@@ -697,6 +697,8 @@ Lifecycle scripts below include setup, teardown, and after-transition hooks.
 | `ENSO_TRANSACTION_ID` / `ENSO_CANDIDATE` | workflow checks | Transaction and stable candidate being evaluated |
 | `ENSO_EVENT_ID` | lifecycle scripts | Stable event identity; use for idempotency/deduplication |
 | `ENSO_PROJECT` / `ENSO_FROM_STAGE` / `ENSO_TO_STAGE` | lifecycle scripts | Project and transition; setup/teardown use the current stage for both stage fields |
+| `ENSO_MESSAGE` / `ENSO_BLOCK_KIND` | lifecycle scripts | The move's handoff or block reason, and for a block its kind: `decision`, `approval`, or `failure` |
+| `ENSO_TASK_TITLE` | lifecycle scripts | The task's title (untrusted text) |
 | `ENSO_BRANCH` / `ENSO_BASE` | lifecycle scripts | Recorded task branch and target |
 | `ENSO_ATTEMPT` | workflow checks and lifecycle scripts | Current verification or delivery attempt |
 | `ENSO_LIFECYCLE` | lifecycle scripts | Marks lifecycle execution; recursive task moves are refused |
@@ -715,7 +717,7 @@ The block is what the model reads, and these variables are what a command it run
 A stage job does the same with the [Task block](tasks.md#the-task-block) and `ENSO_TASK`;
 `ENSO_JOB` and `ENSO_RUN_ID` are also how `enso task` knows it is acting for a run.
 
-Heartbeat runs and the updater's own notifications clear inherited job, task, run, beat,
-and chat-origin variables before starting a child, so the child reports as its own source
-rather than the caller's. Heartbeat's background context comes from the saved beat; a
+Heartbeat runs, project lifecycle scripts, and the updater's own notifications clear
+inherited job, task, run, beat, and chat-origin variables before starting a child, so the
+child reports as its own source rather than the caller's. Heartbeat's background context comes from the saved beat; a
 prior conversation is not presented as a new incoming message.

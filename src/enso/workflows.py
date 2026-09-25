@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import db, execution, locks, tasks, worktrees
+from . import db, execution, locks, messages, tasks, worktrees
 from .config import (
     Config,
     ConfigError,
@@ -264,8 +264,13 @@ def enqueue(
     run_id: str | None,
     *,
     transaction_id: str | None = None,
+    message: str = "",
+    block: str | None = None,
 ) -> None:
-    """Called inside the transition transaction, including manual/dependency moves."""
+    """Called inside the transition transaction, including manual/dependency moves.
+
+    ``task`` is the task before the move; ``message`` and ``block`` describe the move.
+    """
     for name in ("after_transition", f"after:{to}"):
         command = project.hooks.get(name)
         if not command:
@@ -279,8 +284,11 @@ def enqueue(
             "name": name,
             "task_ref": task.ref,
             "project": task.project,
+            "title": task.title,
             "from_stage": task.stage,
             "to_stage": to,
+            "message": message,
+            "block": block or "",
             "transaction_id": transaction_id,
             "run_id": run_id,
             "command": command,
@@ -322,32 +330,47 @@ def _check_current(
     return task, project, stage
 
 
-def _rule_problem(paths: Paths, cwd: Path, tx: dict[str, Any], stage: Stage) -> str | None:
-    start_revision = tx["trusted_revision"]
-    if not start_revision or not stage.checks:
+def guards_rules(project: ProjectConfig, stage: Stage) -> bool:
+    """Whether ``stage`` refuses unapproved changes to the project's acceptance inputs.
+
+    A project that lands work guards them once, at its integration stage, so a person can
+    approve edited tests anywhere before that. Without one, every checked stage guards them.
+    Nothing is guarded when the project has no checks.
+    """
+    if not any(s.checks for s in project.stages):
+        return False
+    if any(s.integrate for s in project.stages):
+        return stage.integrate
+    return bool(stage.checks)
+
+
+def _rule_problem(
+    paths: Paths, cwd: Path, tx: dict[str, Any], project: ProjectConfig, baseline: str | None
+) -> str | None:
+    """Changed acceptance inputs since ``baseline`` that no operator approved, as feedback."""
+    if not baseline:
         return None
-    protected = _protected_changes(cwd, start_revision, stage)
-    if protected:
-        digest = _rule_digest(cwd, start_revision, stage)
-        with db.reader(paths) as con:
-            rows = con.execute(
-                "SELECT payload FROM _enso_task_events WHERE task_id="
-                "(SELECT id FROM _enso_tasks WHERE ref=?) AND kind='rules_approved'",
-                (tx["task_ref"],),
-            ).fetchall()
-        if any(
-            (approval := json.loads(row[0])).get("digest") == digest
-            and approval.get("workflow_hash") == tx["workflow_hash"]
-            and approval.get("spec_hash") == tx["spec_hash"]
-            for row in rows
-        ):
-            return None
-        return (
-            "Acceptance rule inputs changed and need explicit review: "
-            + ", ".join(protected)
-            + ". Preserve the checks or use workflow approve-rules after operator review."
-        )
-    return None
+    protected = _protected_changes(cwd, baseline, project)
+    if not protected:
+        return None
+    digest = _rule_digest(cwd, baseline, project)
+    with db.reader(paths) as con:
+        rows = con.execute(
+            "SELECT payload FROM _enso_task_events WHERE task_id="
+            "(SELECT id FROM _enso_tasks WHERE ref=?) AND kind='rules_approved'",
+            (tx["task_ref"],),
+        ).fetchall()
+    if any(
+        (approval := json.loads(row[0])).get("digest") == digest
+        and approval.get("workflow_hash") == tx["workflow_hash"]
+        and approval.get("spec_hash") == tx["spec_hash"]
+        for row in rows
+    ):
+        return None
+    return (
+        f"Changed tests or check files need approval: {', '.join(protected)}. "
+        f"Review them, then run enso workflow approve-rules {tx['task_ref']}."
+    )
 
 
 async def command(
@@ -436,7 +459,10 @@ def _returns_used(paths: Paths, tx: dict[str, Any]) -> int:
     )
 
 
-def _failure(paths: Paths, tx: dict[str, Any], feedback: str, *, repairable: bool) -> Evaluation:
+def _failure(
+    paths: Paths, tx: dict[str, Any], feedback: str, *, repairable: bool, kind: str = "failure"
+) -> Evaluation:
+    """Repair when allowed and budgeted; otherwise block the handoff as ``kind``."""
     tx["error"] = feedback
     if repairable and _attempts_used(paths, tx) < tx["max_repairs"] + 1:
         tx["status"] = "repairing"
@@ -446,15 +472,10 @@ def _failure(paths: Paths, tx: dict[str, Any], feedback: str, *, repairable: boo
         _update(paths, tx)
         return Evaluation("repair", feedback)
     tx["status"] = "blocked"
+    tx["block"] = kind
     tx["ended_at"] = db.now()
     _update(paths, tx)
     return Evaluation("failed", feedback)
-
-
-def _verify_rebased_rules(paths: Paths, cwd: Path, tx: dict[str, Any], stage: Stage) -> None:
-    problem = _rule_problem(paths, cwd, tx, stage)
-    if problem:
-        raise tasks.TaskError(problem)
 
 
 def _recovery_intent(
@@ -536,6 +557,7 @@ def _finish_blocked_handoff(con: sqlite3.Connection, tx: dict[str, Any]) -> str 
     reason = event["message"]
     tx.update(
         status="blocked",
+        block="decision",
         move="block",
         to_stage="blocked",
         actor=event["actor"],
@@ -559,6 +581,41 @@ def _evaluation_input(paths: Paths, ref: str, run_id: str) -> dict[str, Any] | E
             "The run ended without submitting a handoff with enso task advance/return.",
         )
     return tx
+
+
+async def _changed_rules(
+    paths: Paths,
+    cwd: Path,
+    tx: dict[str, Any],
+    project: ProjectConfig,
+    stage: Stage,
+    target: str | None = None,
+) -> Evaluation | None:
+    """Block on unapproved acceptance-input changes where ``stage`` guards them.
+
+    An integration stage checks only after rebasing, against its ``target``, so only the
+    candidate's own changes count; other stages diff from the worktree's trusted start.
+    """
+    if not guards_rules(project, stage) or (stage.integrate and target is None):
+        return None
+    baseline = target if stage.integrate else tx["trusted_revision"]
+    problem = await execution.run_sync(_rule_problem, paths, cwd, tx, project, baseline)
+    return _failure(paths, tx, problem, repairable=False, kind="approval") if problem else None
+
+
+async def _refuse_candidate(
+    paths: Paths, cwd: Path, tx: dict[str, Any], project: ProjectConfig, stage: Stage
+) -> Evaluation | None:
+    """A worktree candidate must be committed and keep its acceptance inputs unless approved."""
+    dirty = await execution.run_sync(worktrees._unclean, cwd)
+    if dirty:
+        return _failure(
+            paths,
+            tx,
+            "Candidate has uncommitted or untracked files: " + ", ".join(dirty),
+            repairable=True,
+        )
+    return await _changed_rules(paths, cwd, tx, project, stage)
 
 
 async def evaluate(
@@ -593,18 +650,12 @@ async def evaluate(
             tx["status"] = "checking"
             tx["error"] = ""
             _update(paths, tx)
-            if project.repo and stage.worktree is not False:
-                dirty = await execution.run_sync(worktrees._unclean, cwd)
-                if dirty:
-                    return _failure(
-                        paths,
-                        tx,
-                        "Candidate has uncommitted or untracked files: " + ", ".join(dirty),
-                        repairable=True,
-                    )
-                problem = await execution.run_sync(_rule_problem, paths, cwd, tx, stage)
-                if problem:
-                    return _failure(paths, tx, problem, repairable=False)
+            if (
+                project.repo
+                and stage.worktree is not False
+                and (refused := await _refuse_candidate(paths, cwd, tx, project, stage))
+            ):
+                return refused
             target_sha = None
             if stage.integrate:
                 lease = worktrees.landing_context(paths, project, ref)
@@ -619,7 +670,8 @@ async def evaluate(
                     recovery_candidate=recovery["candidate"] if recovery else None,
                 )
                 tx["recovery_of"] = (recovery or {}).get("transaction_id")
-                await execution.run_sync(_verify_rebased_rules, paths, cwd, tx, stage)
+                if refused := await _changed_rules(paths, cwd, tx, project, stage, target_sha):
+                    return refused
             else:
                 candidate = (
                     await execution.run_sync(_revision, cwd)
@@ -778,7 +830,12 @@ def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) 
             for result in tx["checks"]:
                 if result["status"] == "running":
                     result.update(status="interrupted", error=reason)
-            tx.update(status="blocked", error=tx["error"] or reason, ended_at=db.now())
+            tx.update(
+                status="blocked",
+                block=tx.get("block") or "failure",
+                error=tx["error"] or reason,
+                ended_at=db.now(),
+            )
             _save(con, tx)
         if task.claim_run_id == run_id and task.stage in config.projects[task.project].stage_names:
             tasks._apply_move(
@@ -793,6 +850,7 @@ def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) 
                 attention=True,
                 config=config,
                 transaction_id=tx["id"] if tx else None,
+                block=tx["block"] if tx else "failure",
             )
 
 
@@ -825,14 +883,19 @@ async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) 
             event["attempts"] += 1
             _save_event(paths, event)
             info = event["worktree"]
+            # Whoever drains the queue, the hook acts for Enso: never as that caller's job,
+            # run, or chat turn, so an untargeted send goes to the configured notify target.
             env = {
-                **os.environ,
+                **messages.without_identity(os.environ),
                 "ENSO_HOME": str(paths.home),
                 "ENSO_EVENT_ID": event["event_id"],
                 "ENSO_TASK": event["task_ref"],
+                "ENSO_TASK_TITLE": event.get("title", ""),
                 "ENSO_PROJECT": event["project"],
                 "ENSO_FROM_STAGE": event["from_stage"],
                 "ENSO_TO_STAGE": event["to_stage"],
+                "ENSO_MESSAGE": event.get("message", ""),
+                "ENSO_BLOCK_KIND": event.get("block", ""),
                 "ENSO_RUN_ID": event["run_id"] or "",
                 "ENSO_ATTEMPT": str(event["attempts"]),
                 "ENSO_TASK_DIR": event["cwd"],
@@ -955,12 +1018,13 @@ def _reset_locked(paths: Paths, ref: str, text: str) -> None:
             )
 
 
-def _protected_changes(cwd: Path, baseline: str, stage: Stage) -> list[str]:
+def _protected_changes(cwd: Path, baseline: str, project: ProjectConfig) -> list[str]:
+    """Acceptance inputs the candidate changed since ``baseline``; new tests are allowed."""
     _, output = worktrees._git(
         ["diff", "--no-renames", "--name-status", "-z", baseline, "HEAD", "--"], cwd=cwd
     )
     parts = output.rstrip("\0").split("\0") if output else []
-    explicit = tuple(p for c in stage.checks for p in c.protect)
+    explicit = tuple(p for stage in project.stages for c in stage.checks for p in c.protect)
     protected = []
     for status, name in zip(parts[::2], parts[1::2], strict=True):
         if any(fnmatch.fnmatchcase(name, p) for p in explicit) or (
@@ -977,44 +1041,194 @@ def _protected_changes(cwd: Path, baseline: str, stage: Stage) -> list[str]:
     return sorted(protected)
 
 
-def _rule_digest(cwd: Path, baseline: str, stage: Stage) -> str:
+def _rule_digest(cwd: Path, baseline: str, project: ProjectConfig) -> str:
     blobs = []
-    for name in _protected_changes(cwd, baseline, stage):
+    for name in _protected_changes(cwd, baseline, project):
         code, value = worktrees._git(["ls-tree", "HEAD", "--", name], cwd=cwd, check=False)
         blobs.append([name, value.strip() if code == 0 and value else "deleted"])
     return _hash(blobs)
 
 
-def approve_rules(paths: Paths, config: Config, ref: str, message: str) -> None:
+def _approval_baseline(project: ProjectConfig, info: dict[str, Any]) -> str:
+    """The revision a guard will diff against, so an early approval matches it later.
+
+    Integration diffs the rebased candidate against its target, which is the candidate's
+    own changes; before the rebase, the merge base with the target branch gives the same.
+    """
+    if not any(stage.integrate for stage in project.stages):
+        return info["start_revision"]
+    code, base = worktrees._git(
+        ["merge-base", f"refs/heads/{info['base']}", "HEAD"], cwd=Path(info["path"]), check=False
+    )
+    return base.strip() if code == 0 and base.strip() else info["start_revision"]
+
+
+def _waiting_on_approval(con: sqlite3.Connection, task: tasks.Task) -> dict[str, Any] | None:
+    """The handoff an approval would release: blocked only on changed acceptance inputs."""
+    if task.stage != "blocked" or not task.previous_stage:
+        return None
+    tx = _read(con, task.ref)
+    if (
+        tx is None
+        or tx["status"] != "blocked"
+        or tx.get("block") != "approval"
+        or tx["stage"] != task.previous_stage
+        or tx.get("move") != "advance"
+    ):
+        return None
+    # Only while that block still stands: a person may have resumed and blocked it again.
+    row = con.execute(
+        "SELECT payload FROM _enso_task_events WHERE task_id=? AND kind='moved' "
+        "ORDER BY id DESC LIMIT 1",
+        (task.id,),
+    ).fetchone()
+    block = json.loads(row["payload"]) if row else {}
+    if block.get("transaction_id") != tx["id"] or block.get("block") != "approval":
+        return None
+    return tx
+
+
+def _pending_events(con: sqlite3.Connection, ref: str) -> bool:
+    return bool(
+        con.execute(
+            "SELECT 1 FROM _enso_workflow_events WHERE task_ref=? "
+            "AND status IN ('pending','running','failed')",
+            (ref,),
+        ).fetchone()
+    )
+
+
+async def approve_rules(paths: Paths, config: Config, ref: str, message: str) -> Evaluation | None:
+    """Record review of changed acceptance inputs; a handoff they blocked continues.
+
+    The approval pins the reviewed content. When the task is blocked on exactly this, its
+    held handoff resumes checking at once, as the same operator run: no job can claim the
+    task in between, and the next stage receives the original handoff. Returns that
+    evaluation, or None when nothing was waiting on the approval.
+    """
     _operator()
-    task = tasks.get(paths, ref)
-    if task.claim_run_id:
-        raise tasks.TaskError("stop the active run before approving changed acceptance rules")
-    project = tasks._project(config, task.project, task.workspace)
-    stage = project.stage((task.previous_stage or "") if task.stage == "blocked" else task.stage)
-    info = worktrees.lookup(paths, ref)
-    if stage is None or not info:
-        raise tasks.TaskError("there is no worktree candidate to review")
-    if not message.strip():
+    text = tasks.clean_text(message)
+    if not text:
         raise tasks.TaskError("describe the acceptance rule review")
-    digest = _rule_digest(Path(info["path"]), info["start_revision"], stage)
-    with db.transaction(paths) as con:
-        current = tasks._load(con, ref)
-        if current.claim_run_id:
-            raise tasks.TaskError("task was claimed during review")
-        tasks._record(
-            con,
-            task.id,
-            "rules_approved",
-            tasks.actor_from_env(os.environ),
-            None,
-            message=message,
-            payload={
-                "digest": digest,
-                "workflow_hash": _hash(_definition(project)),
-                "spec_hash": _spec(task),
+    task = tasks.get(paths, ref)
+    ref = task.ref
+    project = tasks._project(config, task.project, task.workspace)
+    info = worktrees.lookup(paths, ref)
+    if not info or not any(stage.checks for stage in project.stages):
+        raise tasks.TaskError("there is no checked worktree candidate to review")
+    cwd = Path(info["path"])
+    digest = _rule_digest(cwd, _approval_baseline(project, info), project)
+    run_id = "manual-" + uuid.uuid4().hex
+    actor = tasks.actor_from_env(os.environ)
+    try:
+        with worktrees.execution_context(paths, ref):
+            with db.transaction(paths) as con:
+                current = tasks._load(con, ref)
+                if current.claim_run_id:
+                    raise tasks.TaskError("stop the active run before approving changed tests")
+                held = _waiting_on_approval(con, current)
+                if held is not None and _pending_events(con, ref):
+                    raise tasks.TaskError("finish pending lifecycle scripts before approving")
+                tasks._record(
+                    con,
+                    current.id,
+                    "rules_approved",
+                    actor,
+                    None,
+                    message=text,
+                    payload={
+                        "digest": digest,
+                        "workflow_hash": _hash(_definition(project)),
+                        "spec_hash": _spec(current),
+                    },
+                )
+                if held is None:
+                    return None
+                # Back into the stage and claimed in one transaction; hooks already saw the
+                # block, and the stage's next move enqueues them again.
+                tasks._apply_move(
+                    con,
+                    current,
+                    "resume",
+                    held["stage"],
+                    actor=actor,
+                    run_id=run_id,
+                    message="Changed tests approved; checking the handoff again",
+                    after_ref=None,
+                )
+                _claim_manual(con, current, run_id, actor)
+            return await _operator_handoff(
+                paths,
+                config,
+                ref,
+                run_id,
+                message=held["message"],
+                actor=held.get("actor", actor),
+                refs=[tuple(item) for item in held.get("refs", [])],
+            )
+    except worktrees.WorktreeBusyError:
+        raise tasks.TaskError("stop the active execution before approving") from None
+
+
+def _claim_manual(con: sqlite3.Connection, task: tasks.Task, run_id: str, actor: str) -> None:
+    con.execute(
+        "UPDATE _enso_tasks SET claim_run_id=?,claim_actor=?,claim_at=? WHERE id=?",
+        (run_id, actor, db.now(), task.id),
+    )
+
+
+async def _operator_handoff(
+    paths: Paths,
+    config: Config,
+    ref: str,
+    run_id: str,
+    *,
+    message: str,
+    actor: str,
+    refs: list[tuple[str, str]] | None = None,
+) -> Evaluation:
+    """Submit and check an advance for a task this operator run holds; block on failure.
+
+    The caller holds the task's execution lock and has claimed the task for ``run_id``.
+    """
+    task = tasks.get(paths, ref)
+    project = tasks._project(config, task.project, task.workspace)
+    stage = project.stage(task.stage)
+    assert stage is not None
+    try:
+        if project.repo and stage.worktree is not False:
+            await execution.run_sync(worktrees.prepare, paths, project, ref)
+        await execution.run_sync(start, paths, config, ref, run_id)
+        with db.transaction(paths) as con:
+            current = tasks._load(con, ref)
+            submit(
+                con,
+                current,
+                "advance",
+                project.next_stage(current.stage),
+                message,
+                actor,
+                run_id,
+                list(refs or []),
+            )
+        result = await evaluate(
+            paths,
+            config,
+            ref,
+            run_id,
+            {
+                **os.environ,
+                "ENSO_HOME": str(paths.home),
+                "ENSO_TASK": ref,
+                "ENSO_RUN_ID": run_id,
             },
         )
+        if result.status != "accepted":
+            interrupt(paths, config, ref, run_id, result.feedback)
+        return result
+    except BaseException:
+        interrupt(paths, config, ref, run_id, "manual verification interrupted")
+        raise
 
 
 async def verify_manual(paths: Paths, config: Config, ref: str, message: str) -> Evaluation:
@@ -1022,8 +1236,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
     _operator()
     task = tasks.get(paths, ref)
     project = tasks._project(config, task.project, task.workspace)
-    stage = project.stage(task.stage)
-    if stage is None:
+    if project.stage(task.stage) is None:
         raise tasks.TaskError("resume the task into its stage before verification")
     if not message.strip():
         raise tasks.TaskError("a handoff message is required")
@@ -1034,47 +1247,7 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
             current = tasks._load(con, ref)
             if current.claim_run_id:
                 raise tasks.TaskError("another run holds this task")
-            if con.execute(
-                "SELECT 1 FROM _enso_workflow_events WHERE task_ref=? "
-                "AND status IN ('pending','running','failed')",
-                (task.ref,),
-            ).fetchone():
+            if _pending_events(con, task.ref):
                 raise tasks.TaskError("finish pending lifecycle scripts before verifying")
-            con.execute(
-                "UPDATE _enso_tasks SET claim_run_id=?,claim_actor=?,claim_at=? WHERE id=?",
-                (run_id, actor, db.now(), task.id),
-            )
-        try:
-            if project.repo and stage.worktree is not False:
-                await execution.run_sync(worktrees.prepare, paths, project, ref)
-            await execution.run_sync(start, paths, config, ref, run_id)
-            with db.transaction(paths) as con:
-                current = tasks._load(con, ref)
-                submit(
-                    con,
-                    current,
-                    "advance",
-                    project.next_stage(current.stage),
-                    message,
-                    actor,
-                    run_id,
-                    [],
-                )
-            result = await evaluate(
-                paths,
-                config,
-                ref,
-                run_id,
-                {
-                    **os.environ,
-                    "ENSO_HOME": str(paths.home),
-                    "ENSO_TASK": task.ref,
-                    "ENSO_RUN_ID": run_id,
-                },
-            )
-            if result.status != "accepted":
-                interrupt(paths, config, ref, run_id, result.feedback)
-            return result
-        except BaseException:
-            interrupt(paths, config, ref, run_id, "manual verification interrupted")
-            raise
+            _claim_manual(con, current, run_id, actor)
+        return await _operator_handoff(paths, config, ref, run_id, message=message, actor=actor)

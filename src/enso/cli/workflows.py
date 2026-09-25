@@ -32,41 +32,79 @@ def preset(name: str, lint: str | None, test: str | None) -> list[str | dict]:
         raise ValueError("the development preset requires usable --lint and --test commands")
     checks = [{"name": "lint", "command": lint}, {"name": "tests", "command": test}]
     return [
-        {"name": "plan", "worktree": False},
-        {"name": "implement", "worktree": True, "checks": checks, "max_repairs": 2},
-        {"name": "review", "worktree": True, "return_to": "implement", "max_returns": 2},
-        {"name": "integrate", "integrate": True, "worktree": True, "checks": checks},
+        {"name": "build", "worktree": True, "checks": checks, "max_repairs": 2},
+        {"name": "review", "worktree": True, "return_to": "build", "max_returns": 1},
+        {"name": "qa", "human": True, "return_to": "build"},
+        {"name": "merge", "integrate": True, "worktree": True, "checks": checks},
     ]
 
+
+# The development preset tells a person when a task needs them: blocked, or ready for QA.
+HOOKS = {"after:blocked": "./notify.sh", "after:qa": "./notify.sh"}
+NOTIFY = """#!/usr/bin/env bash
+# Lifecycle hook: one line when a task needs a person, because it is blocked or has
+# reached a human stage. PROJECT.md runs it from hooks; Enso sets the variables below.
+# Without --to, the message goes to the transport's notify target; add
+# `--to slack:C…` or `--to telegram:<id>` to the send to choose another.
+set -euo pipefail
+reason="${ENSO_MESSAGE:-}"
+reason="${reason%%$'\\n'*}"
+if ((${#reason} > 160)); then reason="${reason:0:157}..."; fi
+case "$ENSO_TO_STAGE:${ENSO_BLOCK_KIND:-}" in
+  blocked:failure) text="$ENSO_TASK stopped: $reason" ;;
+  blocked:*) text="$ENSO_TASK needs you: $reason" ;;
+  *) text="$ENSO_TASK is ready for $ENSO_TO_STAGE: ${ENSO_TASK_TITLE:-}" ;;
+esac
+# Best effort: a failed hook would hold the task until retried, so a lost notice only logs.
+if ! enso message send "$text" >/dev/null; then
+  echo "notify.sh: not sent: $text" >&2
+fi
+"""
 
 PROMPTS = {
     "work": (
         "Work on the held task. Follow its scope and project instructions. Submit an honest "
         "handoff with enso task advance, or block with the reason."
     ),
-    "plan": (
-        "Read the task and repository context. Record a short scope, acceptance criteria, "
-        "and validation approach in a task note. Do not change repository files. If requirements "
-        "are unresolved, block. Otherwise submit enso task advance with the plan. The engine "
-        "accepts your submission after this run ends."
-    ),
-    "implement": (
-        "Implement the held task in its worktree, including useful tests and related "
-        "documentation. Run helpful local checks and commit the candidate. Preserve trusted "
-        "acceptance rules; changes to existing tests/check definitions need explicit operator "
-        "review. Submit enso task advance with the change and evidence. Enso independently runs "
-        "required checks after you stop; repair reported failures and submit again when "
-        "requested. Do not land or push."
-    ),
-    "review": (
-        "Independently review the held candidate against the task specification, implementation, "
-        "tests and docs. Record concrete review findings. Use enso task return if changes are "
-        "needed, or submit enso task advance with your review judgment. Executable check results "
-        "are separate evidence. Do not land or push."
-    ),
-    "integrate": (
-        "Enso serializes integration, validates the combined candidate, and lands to the recorded "
-        "target. No model runs in this stage."
+    "build": """\
+Build the held task in its worktree (`cd` to the path in the Task block).
+
+1. Read the task and the repository docs that own the area it touches.
+2. If it needs a decision the task and docs don't make, don't guess: block with one short
+   question, `enso task block REF --message "…"`.
+3. Otherwise update the docs and tests first, then the code. Commit everything and leave no
+   untracked files. Never push.
+4. Never weaken a test to make it pass. Edit existing tests or check configuration only when
+   the change requires it; a person approves those edits before the task merges.
+
+After you hand off, Enso runs the required checks. If one fails you get its output: fix the
+cause and hand off again.
+
+Hand off with `enso task advance REF --message -` in at most four short lines: what changed,
+the commits, the tests added, and the docs touched. If you edited existing tests, add one
+line naming them and why.""",
+    "review": """\
+Review the held task with fresh eyes. `cd` to its worktree and read the task, the commits and
+diff against the base branch named in the Task block, and the repository's instructions.
+
+Check that the change does what the task asks and no more, follows the repository's
+conventions, has tests that cover it, weakens no existing test, and updates the docs it
+affects. Enso already ran the required checks; don't rerun them as evidence.
+
+Needs changes: `enso task return REF --message -` with at most five short bullets.
+
+Good: `enso task advance REF --message -`, written for the person who will try it, under 500
+characters:
+
+**Changed:** one or two short lines.
+**Try it:** up to three steps and what they should see, or one line saying nothing visible
+changed.
+**Edited tests:** only if existing tests or check files changed: which, and whether each edit
+is sound.""",
+    "merge": (
+        "Enso rebases the task branch onto its base, reruns the required checks, and "
+        "fast-forwards the base branch. Changed tests or check files need a person's approval "
+        "first (enso workflow approve-rules). Nothing is pushed, and no model runs here."
     ),
 }
 
@@ -94,12 +132,15 @@ def init_workflow(
         gate = maintenance.read_json(paths.maintenance)
         resume = gate.get("kind") == "workflow-init" and gate.get("project") == key
         stages = [] if resume else preset(preset_name, lint, test)
+        development = preset_name == "dev"
         result = workflow_setup.initialize(
             paths,
             key,
             stages,
             PROMPTS,
-            development=preset_name == "dev",
+            hooks=HOOKS if development else {},
+            scripts={"notify.sh": NOTIFY} if development else {},
+            development=development,
             migrate=migrate,
             base=base,
             worktree_root=worktree_root,
@@ -151,21 +192,29 @@ def _recovery(ref: str, message: str, action: str, as_json: bool, workspace: str
     config = load(paths, as_json=as_json)
     _scope(paths, config, workspace, ref=ref, as_json=as_json)
     text = _text(message, as_json=as_json) or ""
+    continued = False
     try:
         ref = tasks.get(paths, ref).ref
         if action == "retry":
             workflows.reset(paths, ref, text)
             asyncio.run(workflows.drain_events(paths, config, ref=ref))
+            result = None
         elif action == "approve-rules":
-            workflows.approve_rules(paths, config, ref, text)
+            result = asyncio.run(workflows.approve_rules(paths, config, ref, text))
+            continued = result is not None
         else:
             result = asyncio.run(workflows.verify_manual(paths, config, ref, text))
-            if result.status != "accepted":
-                raise tasks.TaskError(result.feedback)
+        if result is not None and result.status != "accepted":
+            raise tasks.TaskError(result.feedback)
+        stage = tasks.get(paths, ref).stage
     except (tasks.TaskError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
-        echo_json({"ok": True, "ref": ref, "action": action})
+        echo_json(
+            {"ok": True, "ref": ref, "action": action, "continued": continued, "stage": stage}
+        )
+    elif continued:
+        typer.echo(f"{action}: {ref}; the held handoff passed its checks and moved to {stage}")
     else:
         typer.echo(f"{action}: {ref}")
 
@@ -199,5 +248,5 @@ def approve_rules(
     workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
-    """Record operator review of changed acceptance inputs; checks still must pass."""
+    """Approve changed tests or check files; a handoff blocked on them continues its checks."""
     _recovery(ref, message, "approve-rules", as_json, workspace)

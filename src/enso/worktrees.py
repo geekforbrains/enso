@@ -130,10 +130,21 @@ def lookup(paths: Paths, ref: str) -> dict[str, Any] | None:
     return dict(row) if row else None
 
 
-def _root(project: ProjectConfig) -> Path:
+def _configured_root(paths: Paths, project: ProjectConfig) -> Path:
+    """``worktree_root`` against the repository, else ``.worktrees`` beside ``PROJECT.md``.
+
+    The default keeps task checkouts with the project that owns them and out of the
+    repository, where linters, file watchers, and search would find every copy.
+    """
+    if project.worktree_root is None:
+        return paths.project(project.workspace, project.key) / ".worktrees"
+    selected = Path(project.worktree_root).expanduser()
+    return selected if selected.is_absolute() else _repo(project) / selected
+
+
+def _root(paths: Paths, project: ProjectConfig) -> Path:
     repo = _repo(project)
-    selected = Path(project.worktree_root or ".worktrees").expanduser()
-    root = (selected if selected.is_absolute() else repo / selected).resolve()
+    root = _configured_root(paths, project).resolve()
     _, common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo)
     if root.is_relative_to(Path(common.strip()).resolve()):
         raise WorktreeError("worktree_root must be outside Git's administrative directory")
@@ -145,8 +156,7 @@ def worktree_path(paths: Paths, project: ProjectConfig, ref: str) -> Path:
     if record is not None:
         return Path(record["path"])
     # Computing a display path needs no Git process; prepare validates the location.
-    root = Path(project.worktree_root or ".worktrees").expanduser()
-    return (root if root.is_absolute() else _repo(project) / root) / ref
+    return _configured_root(paths, project) / ref
 
 
 def branch_name(ref: str) -> str:
@@ -303,14 +313,24 @@ def execution_context(paths: Paths, ref: str) -> Iterator[None]:
 
 
 def _ignore_location(repo: Path, path: Path) -> None:
-    """Keep a configured nested worktree out of the repository without changing tracked files."""
+    """Keep a worktree root out of ``git status`` without changing tracked files.
+
+    A root nested in the task repository is excluded there. Any other root is excluded from
+    the repository that contains it, if one does, such as an Enso home kept in Git.
+    """
+    owner = repo
     if not path.is_relative_to(repo):
-        return
-    _, common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=repo)
+        rc, top = _git(["rev-parse", "--show-toplevel"], cwd=path, check=False)
+        if rc != 0 or not top.strip():
+            return
+        owner = Path(top.strip()).resolve()
+        if owner == path or not path.is_relative_to(owner):
+            return
+    _, common = _git(["rev-parse", "--path-format=absolute", "--git-common-dir"], cwd=owner)
     exclude = Path(common.strip()) / "info" / "exclude"
     exclude.parent.mkdir(parents=True, exist_ok=True)
     # Escape Git ignore metacharacters, including spaces at the end of a path component.
-    relative = path.relative_to(repo).as_posix()
+    relative = path.relative_to(owner).as_posix()
     pattern = "/" + re.sub(r"([\\*?\[\]#! ])", r"\\\1", relative) + "/"
     previous = exclude.read_text() if exclude.exists() else ""
     if pattern not in previous.splitlines():
@@ -496,7 +516,7 @@ def _prepare_record(paths: Paths, project: ProjectConfig, ref: str) -> dict[str,
             raise WorktreeError(f"{ref} belongs to recorded project {record['project']}")
         return record
     repo = _repo(project)
-    path = _root(project) / ref
+    path = _root(paths, project) / ref
     if path.is_symlink():
         raise WorktreeError(f"worktree path must not be a symbolic link: {path}")
     path = path.resolve()
