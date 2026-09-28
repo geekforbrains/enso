@@ -81,6 +81,8 @@ unique across the installation; duplicates report both paths. For example,
 ```yaml
 ---
 name: Application
+workflow: 2
+enabled: false
 repo: ~/Projects/app
 base: develop
 setup: ./setup.sh
@@ -397,6 +399,8 @@ A minimal non-Git `PROJECT.md` is:
 ```yaml
 ---
 name: Example
+workflow: 2
+enabled: false
 stages: [work]
 ---
 ```
@@ -409,6 +413,10 @@ that inspect repository code must explicitly enter `ENSO_TASK_DIR`.
 | --- | --- |
 | Directory key | 2–10 uppercase letters/digits, starting with a letter; unique across workspaces |
 | `name` | Nonempty display name |
+| `workflow` | `2` for the current engine; absent/1 means preserved legacy |
+| `enabled` | Boolean, default false; explicit activation through `workflow enable` |
+| `paths` | Named nonempty stage lists, in declaration order; omitted means one `default` path |
+| `default_path` | Optional intake default naming one declared path |
 | `repo` | Optional Git repository directory; `~` expands |
 | `stages` | Nonempty ordered list of unique stage names or objects |
 | `base` | Optional target branch; recorded for each task worktree, never silently retargeted |
@@ -423,14 +431,19 @@ A string stage is `"work"` or `"approve:human"`. An object stage accepts:
 
 | Stage field | Contract |
 | --- | --- |
-| `name` | 2–24 lowercase letters/digits/hyphens, starting with a letter; never `backlog`, `blocked`, `done`, or `cancelled` |
-| `human` | Boolean, default false; waits for operator action |
+| `name` | 2–24 lowercase letters/digits/hyphens, starting with a letter; never `request`, `backlog`, `blocked`, `done`, or `cancelled` |
+| `inputs` | Earlier stage names or `request`; default `[request]`; suffix `?` consumes a revision when available, otherwise each input must exist on every applicable path |
+| `output` | Expected deliverable description; default `Summary and evidence` |
+| `instructions` | Stage responsibilities, independent of the bound executor; default empty |
+| `routes` | Permitted path choices at this decision stage; their prefixes through this stage must match |
+| `default_route` | Optional default among this stage's `routes` |
+| `human` | Boolean, default false; waits for approval of specific input revisions |
 | `command` | Nonempty command; the stage runs without a provider |
 | `integrate` | Boolean, default false; the engine owns landing and requires a repo/worktree |
 | `worktree` | Boolean; true uses a task worktree and requires a repo, false skips it; omitted follows whether the project has a repo |
 | `checks` | Optional list of required check objects; empty means no executable acceptance checks |
 | `max_repairs` | Nonnegative additional repair opportunities, default 2; zero disables repair |
-| `return_to` | Optional earlier stage name; otherwise `return` uses the previous stage |
+| `return_to` | Explicit earlier stage on every path using this stage; omitted disables return |
 | `max_returns` | Nonnegative return-loop limit, default 2; zero disables returns |
 
 Choose at most one of `human`, `command`, and `integrate`. Other stages use an agent job.
@@ -443,8 +456,8 @@ operator review. [Tasks](tasks.md#stage-transactions-and-checks) owns acceptance
 repair, and the trust boundary.
 
 Unknown fields, invalid types, duplicate names, invalid return destinations, or contradictory
-execution kinds are reported with their `PROJECT.md` paths. Stage instructions belong in
-agent jobs' prompts; execution/check rules belong here. Worktree creation, stable metadata,
+execution kinds are reported with their `PROJECT.md` paths. Stage responsibilities belong
+here; job prompts add executor instructions and each job selects its own agent. Worktree creation, stable metadata,
 copy semantics and safe cleanup are defined in [Tasks](tasks.md#worktrees).
 
 ## Secrets

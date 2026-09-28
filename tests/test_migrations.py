@@ -442,10 +442,17 @@ BEGIN DELETE FROM _enso_run_attempts WHERE run_id = OLD.id; END;
 """
 
 
+def strip_current_workflows(connection):
+    connection.execute("DROP TABLE _enso_workflow_outputs")
+    connection.execute("ALTER TABLE _enso_tasks DROP COLUMN workflow_version")
+    connection.execute("ALTER TABLE _enso_tasks DROP COLUMN route")
+
+
 def old_job_database(paths):
     """Use schema 3's real nonnullable history shape, not a current table with an old marker."""
     db.initialize(paths)
     with sqlite3.connect(paths.db) as connection:
+        strip_current_workflows(connection)
         connection.executescript(
             "DROP TABLE runs; DROP TABLE _enso_job_waiters; DROP TABLE _enso_knowledge_pins;"
             + OLD_RUNS
@@ -752,7 +759,8 @@ def test_job_migration_rebuilds_history_without_losing_attempts_or_user_objects(
             )
     migrations.MIGRATIONS[4].apply(enso_home)
     migrations.MIGRATIONS[4].apply(enso_home)  # a retry recognizes the completed schema
-    migrations.add_knowledge_pins(enso_home)  # the later schema the readers below require
+    migrations.add_knowledge_pins(enso_home)
+    migrations.pause_legacy_workflows(enso_home)  # the current schema the readers below require
     with db.reader(enso_home) as connection:
         assert [
             tuple(row)
@@ -1188,9 +1196,10 @@ def test_fresh_home_at_revision_six_seeds_command_audit_without_historical_scrip
 
 
 def schema_four_database(paths):
-    """Schema 4 is the current schema without the pins table."""
+    """Schema 4 predates knowledge pins and explicit workflow outputs."""
     db.initialize(paths)
     with sqlite3.connect(paths.db) as connection:
+        strip_current_workflows(connection)
         connection.executescript(
             "DROP TABLE _enso_knowledge_pins;"
             "CREATE TABLE user_data (value TEXT); INSERT INTO user_data VALUES ('keep this');"
@@ -1206,9 +1215,9 @@ def test_knowledge_pins_upgrade_matches_a_fresh_database_and_keeps_data(enso_hom
 
     migrations.apply(enso_home)
     migrations.apply(enso_home)
-    migrations.MIGRATIONS[7].apply(enso_home)  # a retry recognizes the completed schema
+    migrations.MIGRATIONS[8].apply(enso_home)  # a retry recognizes the completed schema
 
-    assert migrations.read_revision(enso_home) == 8 == migrations.latest_revision()
+    assert migrations.read_revision(enso_home) == 9 == migrations.latest_revision()
     fresh = Paths(tmp_path / "fresh")
     db.initialize(fresh)
     query = "SELECT sql FROM sqlite_master WHERE name = '_enso_knowledge_pins'"
@@ -1245,3 +1254,39 @@ def test_knowledge_pins_snapshot_restores_schema_four(enso_home, tmp_path):
         tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master")}
         assert "_enso_knowledge_pins" not in tables and "user_data" in tables
     step.apply(enso_home)
+
+
+def test_workflow_upgrade_preserves_and_pauses_old_work_and_effects(enso_home, project_config):
+    from enso import tasks, workflows
+
+    task = tasks.create(enso_home, project_config, "EN", "Preserved request", actor="user:test")
+    tasks.take(enso_home, project_config, "EN", "triage", run_id="old-run", actor="job:old")
+    transaction = workflows.start(enso_home, project_config, task.ref, "old-run")
+    artifact = enso_home.home / "retained-work.txt"
+    artifact.write_text("unfinished deliverable")
+    with sqlite3.connect(enso_home.db) as connection:
+        strip_current_workflows(connection)
+        connection.execute("PRAGMA user_version=5")
+        event = {
+            "event_id": "old-event",
+            "status": "running",
+            "command": "external-effect",
+            "attempts": 1,
+        }
+        connection.execute(
+            "INSERT INTO _enso_workflow_events VALUES (?,?,?,?,?,?)",
+            ("old-event", task.ref, transaction["id"], "running", 1, json.dumps(event)),
+        )
+    migrations.pause_legacy_workflows(enso_home)
+    migrations.pause_legacy_workflows(enso_home)
+    preserved = tasks.get(enso_home, task.ref)
+    assert preserved.workflow_version == 1 and preserved.claim_run_id is None
+    assert preserved.stage == "triage" and preserved.body == task.body
+    assert artifact.read_text() == "unfinished deliverable"
+    assert workflows.history(enso_home, task.ref)[0]["status"] == "legacy"
+    assert workflows.event_history(enso_home, task.ref)[0]["previous_status"] == "running"
+    assert not tasks.ready(enso_home, project_config, "EN", "triage")
+    assert any(
+        event.kind == "legacy_paused" and event.run_id == "old-run"
+        for event in tasks.events(enso_home, task.ref)
+    )

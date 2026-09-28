@@ -47,6 +47,7 @@ agent:
   max_followups: 2            # optional, default 2; 0 disables postrun-requested turns
 project: EN                   # optional, with stage: the project this job serves
 stage: todo                   # optional, with project: one of its agent stages
+workflow: 2                   # required to activate a stage job under the current engine
 concurrency:                 # optional: shared execution and postrun protection
   group: meteor              # required within concurrency
   on_busy: skip              # required: skip or wait, no default
@@ -205,8 +206,10 @@ recovery never replays an interrupted script.
 ## Stage jobs
 
 A stage job serves one executable stage of a [project](tasks.md#projects-and-stages): its
-`project` and `stage` bind it, and its prompt is that stage's instructions, what done means
-there and what to check. `enso job create --project KEY --stage NAME` scaffolds one, and
+`project` and `stage` bind it, and `workflow: 2` opts it into the current engine.
+The project owns inputs, outputs and responsibilities; the job owns its explicit agent
+triple, executor instructions, runtime timeout and scheduling. Legacy stage jobs remain
+inspectable but cannot execute, including through manual runs. `enso job create --project KEY --stage NAME` scaffolds one, and
 with those two flags `--schedule` is optional.
 
 ```bash
@@ -214,7 +217,7 @@ enso job create --name "Enso todo" --provider claude --model opus --effort high 
   --workspace dev --project EN --stage todo
 ```
 
-An enabled, valid stage job is checked each minute unless already running:
+An enabled, valid current-engine stage job in an active project is checked each minute unless already running:
 
 | `schedule` | Trigger |
 | --- | --- |
@@ -242,6 +245,22 @@ A failed or interrupted execution preserves its diagnostic and work for recovery
 [Tasks](tasks.md#claims-and-readiness) owns the claim rules and
 [Concepts](concepts.md#how-a-stage-job-run-flows) an overview.
 
+### Command stage results
+
+A command stage invokes no LLM. Its timeout is the bound job's `timeout`; stdout, stderr,
+exit status and duration are retained. Plain stdout is a text deliverable. For a routing
+decision or structured deliverable, stdout is one JSON object:
+
+```json
+{"outcome":"advance", "route":"simple", "message":"Diagnosis confirmed",
+ "output":{"text":"Diagnosis", "data":{"severity":"low"}}}
+```
+
+`outcome` defaults to `advance`; `return` and `block` are also accepted. `route` must be a
+permitted choice. A nonzero exit or timeout fails the run, and a successful command still
+has to pass independently configured stage checks. Commands can read accepted input content
+with `enso task show "$ENSO_TASK" --json`.
+
 ### Workflow checks and lifecycle events
 
 [Stage checks](tasks.md#stage-transactions-and-checks) enforce acceptance after execution
@@ -250,7 +269,8 @@ checks still require a submitted handoff before acceptance.
 
 [Lifecycle scripts](tasks.md#lifecycle-scripts) react to task moves or worktree cleanup.
 They are persisted separately from job gate/postrun invocations, use stable event IDs, and
-may be delivered more than once. A failed reaction raises attention without undoing the
+may be delivered more than once after known failures. Interrupted deliveries wait for an
+explicit receipt or retry decision; [Tasks](tasks.md#lifecycle-scripts) owns that contract. A failed reaction raises attention without undoing the
 move. Use checks for lint/tests, `hooks["after:done"]` for completion reactions, and
 `hooks["after:blocked"]` to tell people when work needs them; it replaces the runner's
 [alert](#alerts) for a stage run that blocked its task.

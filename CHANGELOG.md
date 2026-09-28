@@ -7,6 +7,12 @@ All notable changes to Enso are documented here, following
 
 ### Changed
 
+- Workflows use declared ordered paths, explicit stage inputs and versioned accepted outputs.
+  Human decisions bind to input revisions; rerouting revisits missing work and revisions
+  invalidate affected evidence. CLI, agent context and viewer expose the same contracts.
+- Existing workflows, stage jobs and tasks are preserved as inactive legacy material.
+  Replacement and adoption are explicit; standalone jobs remain usable. Interrupted
+  lifecycle deliveries require a recorded receipt or retry decision.
 - The task timeline reads oldest first as stage visits. Each visit's header names the stage,
   its duration, and the job and model that worked it. Every event is one row with an icon
   for who acted (person, agent, Enso, or script) and a plain verb; the source column names
@@ -31,10 +37,10 @@ All notable changes to Enso are documented here, following
   Run statuses are unchanged.
 - `enso workflow init --preset dev` now sets up `build → review → qa → merge`. A second
   configured provider reviews what the first built, a person tries each task's worktree in
-  the human `qa` stage, and Enso merges it. The planning stage is gone: keep tasks that
-  still need a decision in `backlog`. Prompts ask for short handoffs, and a generated
-  `notify.sh` hook sends one line when a task is blocked or ready for QA. Existing projects
-  keep their workflow until they rerun `workflow init --migrate`.
+  the human `qa` stage, and Enso merges it. Optional preparation and decision stages are
+  declared in project paths. Prompts ask for short handoffs, and a generated `notify.sh` hook
+  sends one line when a task is blocked or ready for QA. New definitions and jobs start
+  paused for review and explicit activation.
 - Task worktrees default to `.worktrees/<REF>` beside the project's `PROJECT.md` instead of
   inside the repository, and stay out of `git status` of an Enso home kept in Git. Existing
   tasks and an explicit `worktree_root` are unaffected. Backups of the home should skip

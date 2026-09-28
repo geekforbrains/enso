@@ -496,13 +496,13 @@ async def test_task_timeline_groups_stage_visits_and_names_only_other_actors(
     """A header names the job once; its rows leave the source empty, a person keeps a name."""
     page = await html(client, "/tasks/EN-001")
     assert stages(page) == ["triage", "todo"]
-    assert titles(page) == ["Task created", "Advanced → todo", "Commit abc123", "Starting work"]
+    assert titles(page) == ["Task created", "Accepted", "Commit abc123", "Starting work"]
     todo = timeline_of(page).split('<div class="stage-visit">')[2]
     assert '<span class="job">todo · claude opus · high effort</span>' in todo
     assert '<span class="who"></span>' in todo  # the stage's own run: the header says who
     assert '<span class="who">Terminal · gavin</span>' in todo  # the person who attached it
     assert 'title="Agent"' in todo and 'title="Person"' in todo
-    assert "1 event" not in page and "4 events, oldest first" in page
+    assert "1 event" not in page and "5 events, oldest first" in page
 
 
 async def test_task_timeline_names_slack_people_from_the_cache(

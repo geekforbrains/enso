@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import time
@@ -144,6 +145,9 @@ class JobRunner:
         for job in jobs:
             if paused(self.paths):
                 return
+            project = config.projects.get(job.project or "")
+            if job.stage and (job.workflow != 2 or project is None or not project.active):
+                continue
             if not job.enabled or job.ref in problems or job.ref in self._running:
                 continue
             if job.schedule is None:
@@ -268,6 +272,10 @@ class JobRunner:
 
         if paused(self.paths):
             return "Enso is paused for maintenance"
+        if job.stage is not None:
+            project = config.projects.get(job.project or "")
+            if job.workflow != 2 or project is None or not project.active:
+                return "legacy or paused workflow; validate and explicitly enable its replacement"
         if job.stage is not None and config.source_hash is not None:
             fresh, _, _ = check_config(self.paths)
             if (
@@ -682,15 +690,47 @@ class JobRunner:
                     exit_code=rc,
                 )
         if stage is not None:
+            submitted = {
+                "output": output
+                or ("Stage command completed" if command else "Integration requested"),
+                "message": "Stage command completed",
+            }
+            if command and output.lstrip().startswith("{"):
+                try:
+                    submitted = json.loads(output)
+                    if not isinstance(submitted, dict) or set(submitted) - {
+                        "output",
+                        "message",
+                        "route",
+                        "outcome",
+                    }:
+                        raise ValueError("expected output, message, optional route and outcome")
+                    for field in ("message", "route", "outcome"):
+                        if field in submitted and not isinstance(submitted[field], str):
+                            raise ValueError(f"{field} must be text")
+                except (ValueError, TypeError) as exc:
+                    return RunResult(
+                        "error", run_id, output=output, error=f"invalid stage result: {exc}"
+                    )
+            outcome = submitted.get("outcome", "advance")
+            if outcome not in ("advance", "return", "block"):
+                return RunResult(
+                    "error",
+                    run_id,
+                    output=output,
+                    error="stage outcome must be advance, return or block",
+                )
             await execution.run_sync(
                 tasks.move,
                 self.paths,
                 config,
                 stage.task.ref,
-                "advance",
+                outcome,
                 actor=tasks.ENSO_ACTOR,
                 run_id=run_id,
-                message="Stage command completed" if command else "Integration requested",
+                message=submitted.get("message", "Stage command completed"),
+                route=submitted.get("route"),
+                output=submitted.get("output"),
             )
         return RunResult("ok", run_id, output=output, exit_code=rc)
 

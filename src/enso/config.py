@@ -314,6 +314,11 @@ class Stage:
     max_returns: int = 2
     return_to: str | None = None
     integrate: bool = False
+    inputs: tuple[str, ...] = ("request",)
+    output: str = "Summary and evidence"
+    instructions: str = ""
+    routes: tuple[str, ...] = ()
+    default_route: str | None = None
 
 
 @dataclass(frozen=True)
@@ -332,6 +337,18 @@ class ProjectConfig:
     max_concurrency: int = 1
     hooks: dict[str, str] = field(default_factory=dict)
     script_timeout: int = 600
+    workflow: int = 2
+    enabled: bool = True
+    paths: dict[str, tuple[str, ...]] = field(default_factory=dict)
+    default_path: str | None = None
+
+    @property
+    def active(self) -> bool:
+        return self.workflow == 2 and self.enabled
+
+    @property
+    def routes(self) -> dict[str, tuple[str, ...]]:
+        return self.paths or {"default": self.stage_names}
 
     @property
     def stage_names(self) -> tuple[str, ...]:
@@ -364,16 +381,6 @@ class ProjectConfig:
         """Zero-based position of a project stage; ``ValueError`` for anything else."""
         return self.stage_names.index(name)
 
-    def next_stage(self, name: str) -> str:
-        """The stage after ``name``, or ``done`` after the last one."""
-        index = self.index(name) + 1
-        return self.stage_names[index] if index < len(self.stages) else "done"
-
-    def previous_stage(self, name: str) -> str | None:
-        """The stage before ``name``, or None from the first one."""
-        index = self.index(name)
-        return self.stage_names[index - 1] if index else None
-
     def as_dict(self) -> dict[str, Any]:
         return {
             "key": self.key,
@@ -388,6 +395,11 @@ class ProjectConfig:
             "max_concurrency": self.max_concurrency,
             "hooks": self.hooks,
             "script_timeout": self.script_timeout,
+            "workflow": self.workflow,
+            "enabled": self.enabled,
+            "paths": {key: list(value) for key, value in self.routes.items()},
+            "default_path": self.default_path,
+            "status": "active" if self.active else "legacy" if self.workflow != 2 else "paused",
         }
 
 
@@ -534,6 +546,10 @@ ROOT_KEYS = (
     "secrets",
 )
 PROJECT_KEYS = (
+    "workflow",
+    "enabled",
+    "paths",
+    "default_path",
     "name",
     "repo",
     "stages",
@@ -936,12 +952,22 @@ def _stage_entry(entry: object, where: str, problems: list[str]) -> Stage | None
             data[flag] = False
     for key in ("max_repairs", "max_returns"):
         data[key] = _positive_int(entry, key, 2, f"{where}.{name}", problems)
-    for key in ("command", "return_to"):
-        if entry.get(key) is not None and (
-            not isinstance(entry[key], str) or not entry[key].strip()
+    for key in ("command", "return_to", "output", "default_route"):
+        value = entry.get(key, "Summary and evidence" if key == "output" else None)
+        if (value is not None or key == "output") and (
+            not isinstance(value, str) or not value.strip()
         ):
             problems.append(f"{where}.{name}.{key} must be non-empty text")
             data[key] = None
+    for key, default in (("inputs", ["request"]), ("routes", [])):
+        values = _str_list(entry.get(key, default))
+        if values is None or len(values) != len({v.removesuffix("?") for v in values}):
+            problems.append(f"{where}.{name}.{key} must be a list of unique names")
+            values = default
+        data[key] = tuple(values)
+    if not isinstance(entry.get("instructions", ""), str):
+        problems.append(f"{where}.{name}.instructions must be text")
+        data["instructions"] = ""
     data["checks"] = _parse_checks(entry.get("checks", []), f"{where}.{name}.checks", problems)
     stage = Stage(**data)
     if sum((stage.human, stage.command is not None, stage.integrate)) > 1:
@@ -1011,6 +1037,85 @@ def _project_workflow_options(
     return extra
 
 
+def _parse_routes(
+    entry: dict, stages: tuple[Stage, ...], where: str, problems: list[str]
+) -> dict[str, Any]:
+    version = entry.get("workflow", 1)
+    if type(version) is not int or version not in (1, 2):
+        problems.append(f"{where}.workflow must be 2 (1 is preserved legacy)")
+    enabled = entry.get("enabled", False)
+    if type(enabled) is not bool:
+        problems.append(f"{where}.enabled must be true or false")
+    names = tuple(s.name for s in stages)
+    if version == 2 and "request" in names:
+        problems.append(f"{where}.stages: request is reserved for the task input")
+    raw = entry.get("paths", {"default": list(names)})
+    paths: dict[str, tuple[str, ...]] = {}
+    if not isinstance(raw, dict) or not raw:
+        problems.append(f"{where}.paths must map names to nonempty ordered stage lists")
+        raw = {}
+    for name, values in raw.items():
+        route = _str_list(values)
+        if (
+            not isinstance(name, str)
+            or not STAGE_NAME_RE.fullmatch(name)
+            or not route
+            or any(s not in names for s in route)
+            or len(set(route)) != len(route)
+        ):
+            problems.append(f"{where}.paths.{name}: use unique declared stages in order")
+            continue
+        if sorted(route, key=names.index) != route:
+            problems.append(f"{where}.paths.{name}: stages must follow declaration order")
+        paths[name] = tuple(route)
+        for index, selected in enumerate(route):
+            stage = stages[names.index(selected)]
+            missing = {name for name in stage.inputs if not name.endswith("?")} - {
+                "request",
+                *route[:index],
+            }
+            optional = {name[:-1] for name in stage.inputs if name.endswith("?")}
+            missing |= optional - {"request", *names[: names.index(selected)]}
+            if missing:
+                problems.append(
+                    f"{where}.paths.{name}.{selected}: unavailable inputs {sorted(missing)}"
+                )
+            if stage.return_to and stage.return_to not in route[:index]:
+                problems.append(f"{where}.paths.{name}.{selected}: return_to is not on this path")
+    default = entry.get("default_path")
+    if default is not None and (not isinstance(default, str) or default not in paths):
+        problems.append(f"{where}.default_path must name a declared path")
+    _validate_decisions(stages, paths, where, problems)
+    if set(names) - {s for path in paths.values() for s in path}:
+        problems.append(f"{where}.paths must include every declared stage")
+    return {
+        "workflow": version,
+        "enabled": enabled,
+        "paths": paths if "paths" in entry else {},
+        "default_path": default,
+    }
+
+
+def _validate_decisions(
+    stages: tuple[Stage, ...], paths: dict[str, tuple[str, ...]], where: str, problems: list[str]
+) -> None:
+    for stage in stages:
+        choices = set(stage.routes)
+        if choices - paths.keys():
+            problems.append(f"{where}.{stage.name}.routes contains unknown paths")
+        if stage.default_route is not None and stage.default_route not in choices:
+            problems.append(f"{where}.{stage.name}.default_route must be one of its routes")
+        prefixes = [
+            path[: path.index(stage.name) + 1]
+            for key, path in paths.items()
+            if key in choices and stage.name in path
+        ]
+        if choices and (len(prefixes) != len(choices) or len(set(prefixes)) != 1):
+            problems.append(
+                f"{where}.{stage.name}.routes must share their prefix through this stage"
+            )
+
+
 def parse_project(
     paths: Paths, workspace: str, key: str, entry: dict, problems: list[str]
 ) -> ProjectConfig:
@@ -1040,6 +1145,7 @@ def parse_project(
         problems.append(f"{where}.copy must be a list of relative paths inside the repository")
         copy = []
     extra = _project_workflow_options(entry, stages, where, problems)
+    extra.update(_parse_routes(entry, stages, where, problems))
     if repo is None and any(s.worktree or s.integrate for s in stages):
         problems.append(f"{where}: worktree/integrate stages require repo")
     return ProjectConfig(

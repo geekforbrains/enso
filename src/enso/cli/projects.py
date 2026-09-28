@@ -84,7 +84,7 @@ def project_add(
     parse_stages(names, "--stages", problems)
     if problems:
         fail(problems, as_json=as_json)
-    entry: dict[str, object] = {"name": name, "stages": names}
+    entry: dict[str, object] = {"name": name, "stages": names, "workflow": 2, "enabled": False}
     if repo is not None:
         # A relative path is only meaningful from this cwd; PROJECT.md is read from anywhere.
         entry["repo"] = str(repo if repo.expanduser().is_absolute() else repo.resolve())

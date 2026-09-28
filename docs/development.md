@@ -300,7 +300,7 @@ This routine is authorized by [AGENTS.md](../AGENTS.md#local-development-instanc
 Run it from an external terminal or agent session, never from an Enso chat turn or stage job
 whose execution the command would have to drain. Do not create another branch or publish a
 release as part of the refresh. The package version need not change for each local refresh.
-The command requires a clean `develop` checkout and uses its editable `.venv`, prepared
+The routine command requires a clean `develop` checkout and uses its editable `.venv`, prepared
 initially with `uv sync --all-extras --locked`. Source changes are visible to new imports;
 refresh restarts the long-running processes with the completed, tested code.
 
@@ -329,6 +329,25 @@ snapshot. They are operating state, not files to edit by hand. Verify the return
 version, both service statuses, and the affected behavior; UI changes also need a live browser
 check. Record the result in the handoff. This verifies the local editable install; it does not
 replace the installed-release acceptance checks in [Upgrade tests](upgrade-testing.md).
+
+### Testing a feature branch in the live install
+
+An explicit operator request can point the stable launcher at a separate feature worktree
+before merging. Run its committed, clean checkout with an exact branch name:
+
+```bash
+./scripts/dev-refresh --branch feat/example
+# When the tested change also requires home migrations, apply and switch while stopped:
+./scripts/dev-refresh --branch feat/example --migrate
+```
+
+The explicit branch flag permits changing the recorded checkout. It keeps the same drain,
+exclusive lock, snapshots, launcher rollback and service health checks. `--migrate` is explicit
+consent to the previewed home revisions; inspect `scripts/dev-migrate` first. Combined refresh
+switches the launcher before restarting so the new schema is never opened by the old code.
+The regular checkout and `develop` branch remain unchanged. To return after integration, run
+`./scripts/dev-refresh --branch develop` from the regular checkout, whose code must support
+any home revisions already applied. Never restore an old database over newly admitted work.
 
 ### Manual development migrations
 

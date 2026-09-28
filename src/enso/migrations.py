@@ -25,6 +25,7 @@ from .knowledge.catalog import Note, scan_roots
 from .knowledge.links import extract_links
 from .maintenance import UpdateError, read_json, write_json
 from .note_storage import discover_roots, publish, read_bytes, split_document
+from .workflow_migration import pause_legacy_workflows
 from .workspace_migration import migrate_workspace_settings, workspace_settings_paths
 
 MARKER = ".migrations.json"
@@ -316,6 +317,9 @@ MIGRATIONS: tuple[Migration, ...] = (
         migrate_workspace_settings,
     ),
     Migration(8, "add pinned knowledge notes", lambda paths: ("enso.db",), add_knowledge_pins),
+    Migration(
+        9, "preserve and pause legacy workflows", lambda paths: ("enso.db",), pause_legacy_workflows
+    ),
 )
 
 

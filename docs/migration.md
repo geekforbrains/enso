@@ -134,6 +134,41 @@ recognizes a database already at schema 5 on retry. Managed updates apply it aut
 Editable installations use the
 [manual development migration](development.md#manual-development-migrations) before refresh.
 
+## Legacy workflows and manual replacement
+
+Home revision **9** changes database schema 5 to 6 and preserves existing workflow material
+as legacy. The migration runs only after admission is paused, accepted work drains and
+services stop, with a database snapshot for failure recovery. Unfinished transactions are
+recorded as legacy interruption, claims are released with their old owner retained in the
+timeline, and pending lifecycle deliveries are paused. Interrupted work is never accepted.
+Project definitions, job files, task history, scripts, branches and worktrees stay in place.
+Standalone jobs and unrelated workspace activity continue normally after restart.
+
+Definitions and stage jobs without `workflow: 2` cannot run. Preserved tasks have their own
+legacy marker, so replacing a definition alone never activates old tasks. Scheduling, manual
+job runs, task transitions, dependency resumes, recovery, lifecycle delivery and cleanup all
+respect those markers.
+
+To replace a workflow deliberately:
+
+1. Inspect its `PROJECT.md`, stage jobs, tasks, history and retained artifacts. Save the old
+   definition before editing; `workflow init --migrate` retains snapshots when using a preset.
+2. Author `workflow: 2`, `enabled: false`, stage contracts and named paths using normal
+   project configuration tools. Define independent agent jobs or command stages, human
+   checkpoints, checks, return destinations and finite budgets as needed. This is manual
+   authoring; Enso has no translator or compatibility execution engine.
+3. Review or recreate each stage job with `workflow: 2`, initially disabled. Validate with
+   `enso config check` and `enso job show NAME --json`. Old jobs remain inactive.
+4. Run `enso workflow enable KEY --workspace W`, then explicitly enable the intended jobs.
+5. For outstanding work, use `enso workflow adopt REF --route NAME --message REASON` to
+   restart the same identity at the new path's beginning. It retains history and artifacts,
+   but grants no new acceptance to old stages. Alternatively create a task with `--from REF`.
+6. Exercise a small task and inspect outputs, approval and failure paths before broad use.
+
+No legacy external effect is replayed. Inspect old delivery records and the external system
+before authoring a replacement action. Legacy completed work stays available as history;
+monitoring jobs or Heartbeat can create linked follow-up tasks.
+
 ## Declare everything the step changes
 
 `plan(paths)` calls each pending step's `paths` function without changing the home. These

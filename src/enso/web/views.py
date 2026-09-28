@@ -800,6 +800,9 @@ def _job_rows(
     """Every job directory as a row, parsed or not. Shared by Jobs and Today."""
     loaded, error = common.attempt(partial(load_jobs, paths, config))
     found, job_problems = loaded if loaded is not None else ([], {})
+    for job in found:
+        if job.stage and job.workflow != 2:
+            job_problems.setdefault(job.ref, []).append("Legacy workflow stage job; paused")
     summaries, _runs_error = common.attempt(partial(runs.latest_summaries, paths))
     latest = summaries or {}
     rows = [

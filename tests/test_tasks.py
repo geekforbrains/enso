@@ -24,7 +24,10 @@ def add(paths: Paths, config: Config, title: str = "Fix fences", **kwargs: objec
 
 
 def advance(paths: Paths, config: Config, ref: str, *, run_id: str | None = None) -> tasks.Task:
-    task = tasks.move(paths, config, ref, "advance", actor=USER, run_id=run_id, message="done")
+    approve = tasks.context(paths, config, ref, env={})["contract"]["approval"]
+    task = tasks.move(
+        paths, config, ref, "advance", actor=USER, run_id=run_id, message="done", approve=approve
+    )
     return accept(paths, config, ref, run_id) if run_id else task
 
 
@@ -333,23 +336,11 @@ def test_advance_walks_the_pipeline_and_clears_the_claim(
             enso_home, project_config, task.ref, "drop", actor=USER, run_id=None, message="x"
         )
     events = tasks.events(enso_home, task.ref)
-    assert [e.kind for e in events] == [
-        "moved",
-        "moved",
-        "ref",
-        "ref",
-        "accepted",
-        "moved",
-        "submitted",
-        "taken",
-        "created",
-    ]
-    assert (events[0].from_stage, events[0].to_stage, events[0].payload) == (
-        "review",
-        "done",
-        {"move": "advance"},
-    )
-    assert events[5].message == "scoped" and events[5].run_id == "r1"
+    assert len([e for e in events if e.kind == "accepted"]) == 3
+    moved_events = [e for e in events if e.kind == "moved"]
+    assert (moved_events[0].from_stage, moved_events[0].to_stage) == ("review", "done")
+    assert moved_events[0].payload["transaction_id"]
+    assert moved_events[-1].message == "scoped" and moved_events[-1].run_id == "r1"
     assert tasks.list_tasks(enso_home) == [] and tasks.get(enso_home, task.ref) == done
 
 
@@ -365,7 +356,7 @@ def test_backlog_advances_to_the_first_stage(enso_home: Paths, project_config: C
 
 def test_return_goes_back_one_stage(enso_home: Paths, project_config: Config) -> None:
     task = add(enso_home, project_config)
-    with pytest.raises(TaskError, match="triage is the first stage"):
+    with pytest.raises(TaskError, match="triage has no declared return destination"):
         tasks.move(
             enso_home, project_config, task.ref, "return", actor=USER, run_id=None, message="m"
         )
@@ -399,7 +390,7 @@ def test_block_and_resume(enso_home: Paths, project_config: Config) -> None:
             tasks.move(
                 enso_home, project_config, task.ref, move_id, actor=USER, run_id=None, message="m"
             )
-    with pytest.raises(TaskError, match="'nope' is not a stage of EN"):
+    with pytest.raises(TaskError, match="interrupted stage"):
         tasks.move(
             enso_home, project_config, task.ref, "resume", actor=USER, run_id=None, to="nope"
         )
@@ -421,19 +412,18 @@ def test_block_and_resume(enso_home: Paths, project_config: Config) -> None:
     tasks.move(
         enso_home, project_config, task.ref, "block", actor=USER, run_id=None, message="again"
     )
-    elsewhere = tasks.move(
-        enso_home,
-        project_config,
-        task.ref,
-        "resume",
-        actor=USER,
-        run_id=None,
-        to="review",
-        message="skip ahead",
-    )
-    assert elsewhere.stage == "review"
-    resumes = [e for e in tasks.events(enso_home, task.ref) if e.payload.get("move") == "resume"]
-    assert [e.message for e in resumes] == ["skip ahead", ""]
+    with pytest.raises(TaskError, match="interrupted stage"):
+        tasks.move(
+            enso_home,
+            project_config,
+            task.ref,
+            "resume",
+            actor=USER,
+            run_id=None,
+            to="review",
+            message="skip ahead",
+        )
+    assert tasks.get(enso_home, task.ref).stage == "blocked"
 
 
 def test_after_resumes_on_done_and_flags_on_cancel(
@@ -852,6 +842,7 @@ def test_render_task_block_omits_what_does_not_apply(
     ):
         assert absent not in plain
     assert plain.rstrip().endswith("reread with `enso task show EN-001`.")
+    tasks.edit(enso_home, task.ref, actor=USER, run_id=None, body="Body\n\nwith lines")
     tasks.take(enso_home, project_config, "EN", "triage", run_id="r0", actor="job:dev:enso-triage")
     tasks.move(
         enso_home,
@@ -865,7 +856,6 @@ def test_render_task_block_omits_what_does_not_apply(
     accept(enso_home, project_config, task.ref, "r0")
     tasks.note(enso_home, task.ref, actor="slack:U1", run_id=None, message="be careful")
     tasks.add_ref(enso_home, task.ref, "commit", "abc123", actor=USER, run_id=None)
-    tasks.edit(enso_home, task.ref, actor=USER, run_id=None, body="Body\n\nwith lines")
     tasks.take(enso_home, project_config, "EN", "todo", run_id="r1", actor="job:t")
     tasks.release(
         enso_home, task.ref, actor="enso", run_id="r1", message="ended", reason="run_ended"
@@ -932,6 +922,7 @@ def test_a_run_never_moves_a_task_in_a_human_stage(
             actor=USER,
             run_id=None,
             message="approved",
+            approve=ctx["contract"]["approval"],
         ).stage
         == "release"
     )

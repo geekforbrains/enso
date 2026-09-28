@@ -121,10 +121,12 @@ def _validate_home(paths: Paths) -> None:
         load_config(paths)
 
 
-def _checkout(repository: Path, *, clean: bool) -> tuple[str, str]:
+def _checkout(
+    repository: Path, *, clean: bool, expected_branch: str = "develop"
+) -> tuple[str, str]:
     branch = update_services.run_command(["git", "branch", "--show-current"], cwd=repository)
-    if branch != "develop":
-        raise UpdateError("local refreshes must run from develop")
+    if branch != expected_branch:
+        raise UpdateError(f"local refreshes must run from {expected_branch}")
     if clean and update_services.run_command(["git", "status", "--porcelain"], cwd=repository):
         raise UpdateError("commit the tested checkout before refreshing the live instance")
     commit = update_services.run_command(["git", "rev-parse", "HEAD"], cwd=repository)
@@ -133,13 +135,15 @@ def _checkout(repository: Path, *, clean: bool) -> tuple[str, str]:
     return commit, version.removeprefix("enso ")
 
 
-def _launcher(paths: Paths, repository: Path, previous: dict[str, Any]) -> Path:
+def _launcher(
+    paths: Paths, repository: Path, previous: dict[str, Any], *, switch: bool = False
+) -> Path:
     receipt = updates.installed(paths)
     if receipt:
         launcher = Path(receipt["bin_dir"]) / "enso"
     elif previous.get("launcher"):
         launcher = Path(previous["launcher"])
-        if previous.get("repository") != str(repository):
+        if previous.get("repository") != str(repository) and not switch:
             raise UpdateError("this home is connected to a different development checkout")
     else:
         raise UpdateError("first refresh requires an existing managed installation")
@@ -261,7 +265,14 @@ def _previous(paths: Paths) -> dict[str, Any]:
 
 
 def _begin(
-    paths: Paths, repository: Path, migrate: bool, commit: str, version: str
+    paths: Paths,
+    repository: Path,
+    migrate: bool,
+    commit: str,
+    version: str,
+    *,
+    branch: str | None = None,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     previous = _previous(paths)
     resuming = previous.get("phase") == "restored"
@@ -272,8 +283,12 @@ def _begin(
             raise UpdateError(
                 "switch to development first, or test migrations in a stopped scratch home"
             )
-        _checkout(repository, clean=True)
-    launcher = _launcher(paths, repository, previous) if not migrate else None
+        _checkout(repository, clean=True, expected_branch=branch or "develop")
+    launcher = (
+        _launcher(paths, repository, previous, switch=branch is not None)
+        if not migrate or refresh
+        else None
+    )
     if launcher:
         _check_units(services, launcher)
     operation: dict[str, Any] = {
@@ -286,6 +301,7 @@ def _begin(
         "launcher": str(launcher) if launcher else previous.get("launcher"),
         "resuming": resuming,
         "migrate": migrate,
+        "branch": branch or "develop",
     }
     _directory(paths, operation["id"]).mkdir(parents=True, mode=0o700)
     _save(paths, operation, "draining")
@@ -299,6 +315,8 @@ def run(
     migrate: bool = False,
     drain_timeout: float = 300,
     startup_timeout: float = 60,
+    branch: str | None = None,
+    refresh: bool = False,
 ) -> dict[str, Any]:
     """Stop admitted writers, optionally migrate, then verify before reopening work."""
     if any(os.environ.get(key) for key in ("ENSO_RUN_ID", "ENSO_TASK", "ENSO_ORIGIN_TRANSPORT")):
@@ -310,15 +328,19 @@ def run(
         raise UpdateError(
             "home migrations are pending; preview scripts/dev-migrate, then use --apply"
         )
-    if migrate and not preview["pending"]:
+    if migrate and not preview["pending"] and not refresh:
         if maintenance.paused(paths):
             raise UpdateError("maintenance is paused; recover the interrupted operation first")
         return {"ok": True, "message": "No migrations pending.", **preview}
     if not migrate:
         _validate_home(paths)
-    commit, version = _checkout(repository, clean=not migrate)
+    commit, version = _checkout(
+        repository, clean=not migrate or refresh, expected_branch=branch or "develop"
+    )
     with maintenance.lock(paths), maintenance.lock(paths, "worker"):
-        operation = _begin(paths, repository, migrate, commit, version)
+        operation = _begin(
+            paths, repository, migrate, commit, version, branch=branch, refresh=refresh
+        )
         services = operation["services"]
         directory = _directory(paths, operation["id"])
         try:
@@ -332,7 +354,7 @@ def run(
             with maintenance.exclusive_access(paths, drain_timeout):
                 _save(paths, operation, "stopping")
                 update_services.stop(paths, services)
-                if not migrate:
+                if not migrate or refresh:
                     update_services.run_command(
                         ["uv", "sync", "--all-extras", "--locked"], cwd=repository, timeout=300
                     )
@@ -347,7 +369,7 @@ def run(
                         _save(paths, operation, "migrating")
                         migrations.apply(paths)
                     _validate_home(paths)
-                    if not migrate:
+                    if not migrate or refresh:
                         _switch(paths, repository, operation)
                 _save(paths, operation, "starting")
                 binary = repository / ".venv/bin/enso"
@@ -387,6 +409,14 @@ def main() -> int:
         action="store_true",
         help="Restore an interrupted operation; keep services stopped.",
     )
+    parser.add_argument(
+        "--branch", help="Explicitly run this clean branch, allowing a switch to its checkout."
+    )
+    parser.add_argument(
+        "--migrate",
+        action="store_true",
+        help="Apply pending migrations during the same stopped refresh.",
+    )
     args = parser.parse_args()
     paths = Paths(args.home.expanduser().resolve()) if args.home else Paths.from_env()
     repository = Path(__file__).resolve().parents[2]
@@ -396,7 +426,13 @@ def main() -> int:
         elif args.command == "migrate" and not args.apply:
             result = migration_preview(paths)
         else:
-            result = run(paths, repository, migrate=args.command == "migrate")
+            result = run(
+                paths,
+                repository,
+                migrate=args.command == "migrate" or args.migrate,
+                branch=args.branch,
+                refresh=args.command == "refresh",
+            )
         print(json.dumps(result, indent=2))
         return 0
     except (UpdateError, ConfigError, OSError, ValueError, service.ServiceError) as exc:

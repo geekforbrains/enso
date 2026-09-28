@@ -20,7 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from . import db, execution, locks, messages, tasks, worktrees
+from . import db, execution, locks, messages, tasks, workflow_state, worktrees
 from .config import (
     Config,
     ConfigError,
@@ -33,7 +33,7 @@ from .config import (
 )
 
 ACTIVE = ("working", "submitted", "checking", "repairing")
-PENDING_EVENTS = ("pending", "running", "failed")
+PENDING_EVENTS = ("pending", "running", "failed", "uncertain")
 TEST_PATTERNS = (
     "tests/*",
     "test/*",
@@ -178,9 +178,16 @@ def start(paths: Paths, config: Config, ref: str, run_id: str) -> dict[str, Any]
     stage = project.stage(task.stage)
     if stage is None:
         raise tasks.TaskError(f"{ref} has no runnable stage")
+    workflow_state.require_active(project, task)
     definition = _definition(project)
     cwd = _cwd(paths, project, stage, ref)
-    revision = _revision(cwd) if project.repo and stage.worktree is not False else None
+    revision = (
+        approval_candidate(paths, config, task)
+        if stage.human
+        else _revision(cwd)
+        if project.repo and stage.worktree is not False
+        else None
+    )
     with db.transaction(paths) as con:
         existing = _read(con, ref, run_id)
         if existing:
@@ -188,6 +195,7 @@ def start(paths: Paths, config: Config, ref: str, run_id: str) -> dict[str, Any]
         current = tasks._load(con, ref)
         if current.claim_run_id != run_id or current.stage != task.stage:
             raise tasks.TaskError(f"{ref}: execution claim changed")
+        workflow_state.prior_results(con, project, current)
         tx: dict[str, Any] = {
             "id": uuid.uuid4().hex,
             "task_ref": ref,
@@ -201,6 +209,10 @@ def start(paths: Paths, config: Config, ref: str, run_id: str) -> dict[str, Any]
                 "start_revision", revision
             ),
             "spec_hash": _spec(task),
+            "inputs": workflow_state.input_ids(con, ref, stage, project),
+            "route": task.route,
+            "output": None,
+            "engine": 2,
             "workflow_hash": _hash(definition),
             "definition": definition,
             "stage_definition": stage_dict(stage),
@@ -232,6 +244,10 @@ def submit(
     actor: str,
     run_id: str,
     attached: list[tuple[str, str]],
+    *,
+    route: str | None = None,
+    output: Any = None,
+    approve: str | None = None,
 ) -> tasks.Task:
     tx = _read(con, task.ref, run_id)
     if tx is None or tx["status"] not in ACTIVE:
@@ -239,7 +255,15 @@ def submit(
     if tx["stage"] != task.stage:
         raise tasks.TaskError("stage changed while submitting")
     tx.update(
-        status="submitted", to_stage=to, message=message, move=move_id, actor=actor, refs=attached
+        status="submitted",
+        to_stage=to,
+        message=message,
+        move=move_id,
+        actor=actor,
+        refs=attached,
+        route=route or task.route,
+        output=workflow_state.result(output if output is not None else message),
+        approval=approve,
     )
     _save(con, tx)
     tasks._record(
@@ -271,6 +295,8 @@ def enqueue(
 
     ``task`` is the task before the move; ``message`` and ``block`` describe the move.
     """
+    if not project.active or task.workflow_version != 2:
+        return
     for name in ("after_transition", f"after:{to}"):
         command = project.hooks.get(name)
         if not command:
@@ -279,6 +305,7 @@ def enqueue(
         record = con.execute("SELECT * FROM _enso_worktrees WHERE ref = ?", (task.ref,)).fetchone()
         info = dict(record) if record else {}
         data: dict[str, Any] = {
+            "engine": 2,
             "event_id": event_id,
             "id": event_id,
             "name": name,
@@ -314,6 +341,7 @@ def _check_current(
 ) -> tuple[tasks.Task, ProjectConfig, Stage]:
     task = tasks.get(paths, tx["task_ref"])
     project = tasks._project(config, task.project, task.workspace)
+    workflow_state.require_active(project, task)
     # A running controller uses a snapshot, but reject an operator config change instead
     # of accepting stale rules. Scratch/in-memory configs need no file round trip.
     if paths.config.exists():
@@ -327,6 +355,9 @@ def _check_current(
         raise tasks.TaskError("execution ownership or accepted stage changed")
     stage = project.stage(task.stage)
     assert stage is not None
+    with db.reader(paths) as con:
+        if workflow_state.input_ids(con, task.ref, stage, project) != tx.get("inputs"):
+            raise tasks.TaskError("accepted inputs changed; evidence is stale")
     return task, project, stage
 
 
@@ -441,9 +472,7 @@ def _budget_history(paths: Paths, tx: dict[str, Any]) -> list[dict[str, Any]]:
     return [
         r
         for row in rows
-        if (r := json.loads(row[0]))["spec_hash"] == tx["spec_hash"]
-        and r["workflow_hash"] == tx["workflow_hash"]
-        and (reset_at is None or r["started_at"] > reset_at)
+        if (r := json.loads(row[0])) and (reset_at is None or r["started_at"] > reset_at)
     ]
 
 
@@ -618,6 +647,30 @@ async def _refuse_candidate(
     return await _changed_rules(paths, cwd, tx, project, stage)
 
 
+def _validate_transition(
+    paths: Paths, project: ProjectConfig, stage: Stage, task: tasks.Task, tx: dict[str, Any]
+) -> None:
+    selected, destination = workflow_state.destination(
+        project, task, tx["move"], tx["route"] if tx["route"] != task.route else None
+    )
+    if destination != tx["to_stage"]:
+        raise tasks.TaskError("submission destination changed")
+    _validate_approval(stage, tx)
+    if stage.integrate:
+        for prior in history(paths, task.ref):
+            if (
+                prior["status"] == "accepted"
+                and prior.get("stage_definition", {}).get("human")
+                and prior["stage"] in workflow_state.path_for(project, task.route)
+            ):
+                if prior.get("starting_revision") != tx["starting_revision"]:
+                    raise tasks.TaskError(
+                        "Git candidate changed after human approval; return for fresh approval"
+                    )
+                break
+    tx["route"] = selected
+
+
 async def evaluate(
     paths: Paths, config: Config, ref: str, run_id: str, env: dict[str, str]
 ) -> Evaluation:
@@ -628,6 +681,7 @@ async def evaluate(
     candidate: str | None = None
     try:
         _task, project, stage = _check_current(paths, config, tx)
+        _validate_transition(paths, project, stage, _task, tx)
         cwd = Path(tx["cwd"])
         if tx["move"] == "return":
             returns = _returns_used(paths, tx)
@@ -676,7 +730,7 @@ async def evaluate(
                 candidate = (
                     await execution.run_sync(_revision, cwd)
                     if project.repo and stage.worktree is not False
-                    else _hash([tx["spec_hash"], tx["message"]])
+                    else workflow_state.digest([tx["inputs"], tx["output"]])
                 )
             tx["candidate"] = candidate
             _update(paths, tx)
@@ -690,6 +744,8 @@ async def evaluate(
                 "ENSO_TRANSACTION_ID": tx["id"],
                 "ENSO_CANDIDATE": candidate or "",
                 "ENSO_ATTEMPT": str(tx["attempts"]),
+                "ENSO_OUTPUT": json.dumps(tx["output"]),
+                "ENSO_INPUTS": json.dumps(tx["inputs"]),
             }
             for check in stage.checks:
                 result = {
@@ -771,52 +827,154 @@ async def evaluate(
             lease.__exit__(None, None, None)
 
 
+def _validate_approval(stage: Stage, tx: dict[str, Any]) -> None:
+    if stage.human and tx["move"] == "advance":
+        expected = workflow_state.approval_digest(tx["inputs"], tx.get("starting_revision"), stage)
+        if tx.get("approval") != expected:
+            raise tasks.TaskError(f"approve the current input revisions with --approve {expected}")
+
+
 def _accept(paths: Paths, config: Config, tx: dict[str, Any]) -> None:
     with db.transaction(paths) as con:
-        task = tasks._load(con, tx["task_ref"])
-        if (
-            task.claim_run_id != tx["run_id"]
-            or task.stage != tx["stage"]
-            or _spec(task) != tx["spec_hash"]
-        ):
-            raise tasks.TaskError("task changed before acceptance; evidence is stale")
-        tx["status"], tx["ended_at"], tx["error"] = "accepted", db.now(), ""
-        _save(con, tx)
-        moved = tasks._apply_move(
+        _accept_transaction(con, config, tx)
+
+
+def _accept_transaction(con: sqlite3.Connection, config: Config, tx: dict[str, Any]) -> None:
+    task = tasks._load(con, tx["task_ref"])
+    if (
+        task.claim_run_id != tx["run_id"]
+        or task.stage != tx["stage"]
+        or _spec(task) != tx["spec_hash"]
+    ):
+        raise tasks.TaskError("task changed before acceptance; evidence is stale")
+    project = config.projects[task.project]
+    stage = project.stage(task.stage)
+    assert stage is not None
+    workflow_state.require_active(project, task)
+    workflow_state.prior_results(con, project, task)
+    if workflow_state.input_ids(con, task.ref, stage, project) != tx["inputs"]:
+        raise tasks.TaskError("accepted inputs changed before acceptance")
+    if tx["move"] == "return":
+        workflow_state.revisit(con, project, task, tx["route"], tx["to_stage"])
+    else:
+        output = workflow_state.accept_output(
             con,
-            task,
-            tx["move"],
-            tx["to_stage"],
+            task.ref,
+            task.stage,
+            tx["output"],
+            tx["inputs"],
             actor=tx.get("actor", tasks.ENSO_ACTOR),
-            run_id=tx["run_id"],
-            message=tx["message"],
-            after_ref=task.after_ref,
-            config=config,
             transaction_id=tx["id"],
         )
-        tasks._record(
+        tx["accepted_output"] = output["id"]
+    con.execute("UPDATE _enso_tasks SET route=? WHERE id=?", (tx["route"], task.id))
+    tx["status"], tx["ended_at"], tx["error"] = "accepted", db.now(), ""
+    _save(con, tx)
+    moved = tasks._apply_move(
+        con,
+        task,
+        tx["move"],
+        tx["to_stage"],
+        actor=tx.get("actor", tasks.ENSO_ACTOR),
+        run_id=tx["run_id"],
+        message=tx["message"],
+        after_ref=task.after_ref,
+        config=config,
+        transaction_id=tx["id"],
+    )
+    tasks._record(
+        con,
+        task.id,
+        "accepted",
+        tasks.ENSO_ACTOR,
+        tx["run_id"],
+        from_stage=task.stage,
+        to_stage=moved.stage,
+        message="Stage accepted"
+        + (" after executable checks" if tx["checks"] else " without configured checks"),
+        payload={"transaction_id": tx["id"], "candidate": tx["candidate"]},
+    )
+    for kind, value in tx.get("refs", []):
+        tasks._attach(
             con,
             task.id,
-            "accepted",
-            tasks.ENSO_ACTOR,
-            tx["run_id"],
-            from_stage=task.stage,
-            to_stage=moved.stage,
-            message="Stage accepted"
-            + (" after executable checks" if tx["checks"] else " without configured checks"),
-            payload={"transaction_id": tx["id"], "candidate": tx["candidate"]},
+            kind,
+            value,
+            actor=tx.get("actor", tasks.ENSO_ACTOR),
+            run_id=tx["run_id"],
         )
-        for kind, value in tx.get("refs", []):
-            tasks._attach(
-                con,
-                task.id,
-                kind,
-                value,
-                actor=tx.get("actor", tasks.ENSO_ACTOR),
-                run_id=tx["run_id"],
-            )
-        if moved.finished:
-            tasks._settle_waiting(con, config, moved, moved.stage)
+    if moved.finished:
+        tasks._settle_waiting(con, config, moved, moved.stage)
+
+
+def accept_immediate(
+    con: sqlite3.Connection,
+    config: Config,
+    task: tasks.Task,
+    move: str,
+    to: str,
+    message: str,
+    actor: str,
+    route: str | None,
+    output: Any,
+    attached: list[tuple[str, str]],
+    approve: str | None,
+    candidate: str | None = None,
+) -> tasks.Task:
+    """An operator's unchecked work or decision uses the same atomic acceptance writer."""
+    project = config.projects[task.project]
+    stage = project.stage(task.stage)
+    assert stage is not None
+    if move == "advance" and (stage.checks or stage.integrate or stage.command):
+        raise tasks.TaskError("run the stage job or enso workflow verify for required execution")
+    if move == "return":
+        used = con.execute(
+            "SELECT count(*) FROM _enso_task_events WHERE task_id=? "
+            "AND kind='moved' AND from_stage=? AND json_extract(payload,'$.move')='return' "
+            "AND id > coalesce((SELECT max(id) FROM _enso_task_events WHERE task_id=? "
+            "AND kind='workflow_reset'),0)",
+            (task.id, task.stage, task.id),
+        ).fetchone()[0]
+        if used >= stage.max_returns:
+            raise tasks.TaskError("Stage return limit exhausted; needs a human decision")
+    tx: dict[str, Any] = {
+        "id": uuid.uuid4().hex,
+        "engine": 2,
+        "task_ref": task.ref,
+        "run_id": None,
+        "stage": task.stage,
+        "to_stage": to,
+        "route": route,
+        "move": move,
+        "status": "submitted",
+        "spec_hash": _spec(task),
+        "workflow_hash": _hash(_definition(project)),
+        "definition": _definition(project),
+        "stage_definition": stage_dict(stage),
+        "inputs": workflow_state.input_ids(con, task.ref, stage, project),
+        "output": workflow_state.result(output if output is not None else message),
+        "approval": approve,
+        "actor": actor,
+        "message": message,
+        "refs": attached,
+        "checks": [],
+        "hooks": [],
+        "candidate": candidate,
+        "starting_revision": candidate,
+        "error": "",
+        "attempts": 0,
+        "repairs": 0,
+        "started_at": db.now(),
+        "ended_at": None,
+    }
+    _validate_approval(stage, tx)
+    # The storage key is non-null; the data distinguishes a person from an executor run.
+    con.execute(
+        "INSERT INTO _enso_workflow_transactions VALUES (?,?,?,?,?,?)",
+        (tx["id"], task.ref, "operator-" + tx["id"], task.stage, "submitted", json.dumps(tx)),
+    )
+    _accept_transaction(con, config, tx)
+    return tasks._load(con, task.ref)
 
 
 def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) -> None:
@@ -855,7 +1013,7 @@ def interrupt(paths: Paths, config: Config, ref: str, run_id: str, reason: str) 
 
 
 async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) -> None:
-    """At-least-once delivery, three attempts, stable IDs; failed events keep ownership."""
+    """Bounded delivery with stable IDs; interrupted effects need an explicit receipt."""
     try:
         lock = locks.acquire(paths.lock("workflow-events"))
     except BlockingIOError:
@@ -864,19 +1022,49 @@ async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) 
         with db.reader(paths) as con:
             rows = con.execute(
                 "SELECT data FROM _enso_workflow_events "
-                "WHERE status IN ('pending','running','failed') ORDER BY rowid"
+                "WHERE status IN ('pending','running','failed','uncertain') ORDER BY rowid"
             ).fetchall()
         stalled: set[str] = set()
         for row in rows:
             event = json.loads(row[0])
             if event["task_ref"] in stalled:
                 continue
-            if event["attempts"] >= 3:
+            if event["status"] == "uncertain":
                 stalled.add(event["task_ref"])
                 continue
             if ref and event["task_ref"] != ref:
                 continue
             task = tasks.get(paths, event["task_ref"])
+            project = config.projects.get(task.project)
+            if (
+                event.get("engine") != 2
+                or task.workflow_version != 2
+                or project is None
+                or not project.active
+            ):
+                continue
+            if event["status"] == "running":
+                event.update(
+                    status="uncertain",
+                    error=(
+                        "Delivery interrupted; inspect the external effect "
+                        "and resolve its receipt before retrying"
+                    ),
+                )
+                _save_event(paths, event)
+                tasks.note(
+                    paths,
+                    task.ref,
+                    actor=tasks.ENSO_ACTOR,
+                    run_id=None,
+                    message=event["error"],
+                    attention=True,
+                )
+                stalled.add(task.ref)
+                continue
+            if event["attempts"] >= event.get("max_attempts", 3):
+                stalled.add(task.ref)
+                continue
             if task.claim_run_id:
                 continue
             event["status"] = "running"
@@ -921,9 +1109,15 @@ async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) 
                 )
             event["deliveries"].append({**result, "attempt": event["attempts"], "at": db.now()})
             event.update(result)
-            event["status"] = "delivered" if result["status"] == "passed" else "failed"
+            event["status"] = (
+                "delivered"
+                if result["status"] == "passed"
+                else "uncertain"
+                if result["status"] in ("timeout", "interrupted")
+                else "failed"
+            )
             _save_event(paths, event)
-            if event["status"] == "failed":
+            if event["status"] in ("failed", "uncertain"):
                 stalled.add(event["task_ref"])
                 tasks.note(
                     paths,
@@ -931,8 +1125,8 @@ async def drain_events(paths: Paths, config: Config, *, ref: str | None = None) 
                     actor=tasks.ENSO_ACTOR,
                     run_id=None,
                     message=(
-                        f"Lifecycle {event['name']} failed (event {event['event_id']}, "
-                        f"attempt {event['attempts']}/3): "
+                        f"Lifecycle {event['name']} {event['status']} (event {event['event_id']}, "
+                        f"attempt {event['attempts']}/{event.get('max_attempts', 3)}): "
                         f"{result['error'] or result['output'][-1000:]}"
                     ),
                     attention=True,
@@ -1000,6 +1194,8 @@ def reset(paths: Paths, ref: str, message: str) -> None:
 def _reset_locked(paths: Paths, ref: str, text: str) -> None:
     with db.transaction(paths) as con:
         task = tasks._load(con, ref)
+        if task.workflow_version != 2:
+            raise tasks.TaskError("legacy work is paused; explicitly adopt it before recovery")
         if task.claim_run_id:
             _recover_manual_claim(con, task)
         tasks._record(
@@ -1092,7 +1288,7 @@ def _pending_events(con: sqlite3.Connection, ref: str) -> bool:
     return bool(
         con.execute(
             "SELECT 1 FROM _enso_workflow_events WHERE task_ref=? "
-            "AND status IN ('pending','running','failed')",
+            "AND status IN ('pending','running','failed','uncertain')",
             (ref,),
         ).fetchone()
     )
@@ -1113,6 +1309,7 @@ async def approve_rules(paths: Paths, config: Config, ref: str, message: str) ->
     task = tasks.get(paths, ref)
     ref = task.ref
     project = tasks._project(config, task.project, task.workspace)
+    workflow_state.require_active(project, task)
     info = worktrees.lookup(paths, ref)
     if not info or not any(stage.checks for stage in project.stages):
         raise tasks.TaskError("there is no checked worktree candidate to review")
@@ -1165,6 +1362,9 @@ async def approve_rules(paths: Paths, config: Config, ref: str, message: str) ->
                 message=held["message"],
                 actor=held.get("actor", actor),
                 refs=[tuple(item) for item in held.get("refs", [])],
+                route=held.get("route"),
+                output=held.get("output"),
+                approve=held.get("approval"),
             )
     except worktrees.WorktreeBusyError:
         raise tasks.TaskError("stop the active execution before approving") from None
@@ -1186,6 +1386,9 @@ async def _operator_handoff(
     message: str,
     actor: str,
     refs: list[tuple[str, str]] | None = None,
+    route: str | None = None,
+    output: Any = None,
+    approve: str | None = None,
 ) -> Evaluation:
     """Submit and check an advance for a task this operator run holds; block on failure.
 
@@ -1205,11 +1408,16 @@ async def _operator_handoff(
                 con,
                 current,
                 "advance",
-                project.next_stage(current.stage),
+                workflow_state.destination(
+                    project, current, "advance", route if route != current.route else None
+                )[1],
                 message,
                 actor,
                 run_id,
                 list(refs or []),
+                route=route,
+                output=output,
+                approve=approve,
             )
         result = await evaluate(
             paths,
@@ -1231,11 +1439,24 @@ async def _operator_handoff(
         raise
 
 
-async def verify_manual(paths: Paths, config: Config, ref: str, message: str) -> Evaluation:
+async def verify_manual(
+    paths: Paths,
+    config: Config,
+    ref: str,
+    message: str,
+    *,
+    route: str | None = None,
+    output: Any = None,
+    approve: str | None = None,
+) -> Evaluation:
     """Operator checkpoint/check-only acceptance; no model and no unchecked override."""
     _operator()
     task = tasks.get(paths, ref)
     project = tasks._project(config, task.project, task.workspace)
+    workflow_state.require_active(project, task)
+    selected = project.stage(task.stage)
+    if selected and selected.command:
+        raise tasks.TaskError("command stages must run their configured stage job")
     if project.stage(task.stage) is None:
         raise tasks.TaskError("resume the task into its stage before verification")
     if not message.strip():
@@ -1250,4 +1471,132 @@ async def verify_manual(paths: Paths, config: Config, ref: str, message: str) ->
             if _pending_events(con, task.ref):
                 raise tasks.TaskError("finish pending lifecycle scripts before verifying")
             _claim_manual(con, current, run_id, actor)
-        return await _operator_handoff(paths, config, ref, run_id, message=message, actor=actor)
+        return await _operator_handoff(
+            paths,
+            config,
+            ref,
+            run_id,
+            message=message,
+            actor=actor,
+            route=route,
+            output=output,
+            approve=approve,
+        )
+
+
+def reroute(
+    paths: Paths, config: Config, ref: str, route: str, message: str, *, adopt: bool = False
+) -> tasks.Task:
+    """Audited operator reroute/adoption; reuse only a valid prefix and retain budgets."""
+    _operator()
+    if not message.strip():
+        raise tasks.TaskError("give the reason for this route decision")
+    with worktrees.execution_context(paths, ref), db.transaction(paths) as con:
+        task = tasks._load(con, ref)
+        project = tasks._project(config, task.project, task.workspace)
+        workflow_state.require_active(project, None if adopt else task)
+        if task.finished or task.claim_run_id or _pending_events(con, task.ref):
+            raise tasks.TaskError(
+                "finish active execution and lifecycle work before changing this route"
+            )
+        if adopt:
+            if task.workflow_version == 2:
+                raise tasks.TaskError("this task already uses the current engine")
+            selected, target = workflow_state.intake(project, route)
+            workflow_state.accept_output(
+                con,
+                task.ref,
+                "request",
+                {"text": task.title + "\n\n" + task.body},
+                {},
+                actor=tasks.actor_from_env(os.environ),
+            )
+        else:
+            stage = project.stage(
+                (task.previous_stage or task.stage) if task.stage == "blocked" else task.stage
+            )
+            if stage is not None:
+                used = con.execute(
+                    "SELECT count(*) FROM _enso_task_events WHERE task_id=? "
+                    "AND kind='rerouted' AND from_stage=? AND id > coalesce((SELECT max(id) "
+                    "FROM _enso_task_events WHERE task_id=? AND kind='workflow_reset'),0)",
+                    (task.id, stage.name, task.id),
+                ).fetchone()[0]
+                if used >= stage.max_returns:
+                    raise tasks.TaskError(
+                        "reroute budget exhausted; an explicit workflow retry is required"
+                    )
+            selected, target = route, workflow_state.reroute_target(con, project, task, route)
+        con.execute(
+            "UPDATE _enso_tasks SET workflow_version=2,route=? WHERE id=?", (selected, task.id)
+        )
+        tasks._record(
+            con,
+            task.id,
+            "adopted" if adopt else "rerouted",
+            tasks.actor_from_env(os.environ),
+            None,
+            from_stage=task.previous_stage or task.stage,
+            to_stage=target,
+            message=message,
+            payload={"from_route": task.route, "route": selected},
+        )
+        return tasks._apply_move(
+            con,
+            tasks._load(con, ref),
+            "resume",
+            target,
+            actor=tasks.actor_from_env(os.environ),
+            run_id=None,
+            message=message,
+            after_ref=None,
+            config=config,
+        )
+
+
+def resolve_event(paths: Paths, ref: str, event_id: str, disposition: str, message: str) -> None:
+    """A person records a receipt or explicitly authorizes another attempt after uncertainty."""
+    _operator()
+    if disposition not in ("delivered", "retry") or not message.strip():
+        raise tasks.TaskError(
+            "choose delivered or retry and give the external receipt or retry reason"
+        )
+    with worktrees.execution_context(paths, ref), db.transaction(paths) as con:
+        row = con.execute(
+            "SELECT data FROM _enso_workflow_events WHERE id=? AND task_ref=?", (event_id, ref)
+        ).fetchone()
+        if row is None:
+            raise tasks.TaskError("no such lifecycle event for this task")
+        event = json.loads(row[0])
+        if event.get("engine") != 2 or event["status"] != "uncertain":
+            raise tasks.TaskError("only an uncertain current-engine delivery can be resolved")
+        event.update(
+            status="delivered" if disposition == "delivered" else "pending",
+            receipt=message,
+            resolved_by=tasks.actor_from_env(os.environ),
+        )
+        if disposition == "retry":
+            event["max_attempts"] = event["attempts"] + 1
+        con.execute(
+            "UPDATE _enso_workflow_events SET status=?,data=? WHERE id=?",
+            (event["status"], json.dumps(event), event_id),
+        )
+        task = tasks._load(con, ref)
+        tasks._record(
+            con,
+            task.id,
+            "delivery_resolved",
+            tasks.actor_from_env(os.environ),
+            None,
+            message=message,
+            payload={"event_id": event_id, "decision": disposition},
+        )
+
+
+def approval_candidate(paths: Paths, config: Config, task: tasks.Task) -> str | None:
+    project = config.projects.get(task.project)
+    stage = project.stage(task.stage) if project else None
+    if not project or not project.repo or not stage or not stage.human:
+        return None
+    info = worktrees.lookup(paths, task.ref)
+    return _revision(Path(info["path"])) if info and info.get("status") != "removed" else None

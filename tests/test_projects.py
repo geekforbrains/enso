@@ -42,7 +42,7 @@ def test_project_fields_and_external_repo(enso_home, raw_config, repo):
     assert project.repo == repo and project.worktree_root == "../trees"
     assert project.setup == "./setup.sh" and project.copy == (".env",)
     assert project.agent_stages == ("work",) and project.human_stages == ("approve",)
-    assert project.next_stage("work") == "approve" and project.previous_stage("work") is None
+    assert project.routes == {"default": ("work", "approve")}
 
 
 def test_project_errors_accumulate_with_source_paths(enso_home, raw_config):
@@ -148,7 +148,13 @@ def test_project_add_preserves_config_and_refuses_overwrite(
     assert project["key"] == "EN" and project["workspace"] == "default"
     assert enso_home.config.read_bytes() == before
     path = enso_home.project("default", "EN") / "PROJECT.md"
-    assert frontmatter.read(path).fields == {"name": "Enso", "stages": ["work"], "repo": str(repo)}
+    assert frontmatter.read(path).fields == {
+        "name": "Enso",
+        "stages": ["work"],
+        "repo": str(repo),
+        "workflow": 2,
+        "enabled": False,
+    }
     original = path.read_bytes()
     enso_home.workspace("team").mkdir()
     duplicate = invoke("add", "EN", "--name", "Other", "--workspace", "team")

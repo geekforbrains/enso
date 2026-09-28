@@ -1,14 +1,8 @@
 """Tasks: the board agents pick work from, its moves, its audit trail, and the agent packet.
 
-A task belongs to a configured project and sits in one stage: one of the project's own
-stages, or a built-in one (``backlog``, ``blocked``, ``done``, ``cancelled``). Moves are
-derived from the project's stage list rather than declared, so there is no workflow language:
-``advance``, ``return``, ``block``, ``resume``, ``drop``. Every rule about who may move what
-lives here, never in the CLI, so chat, jobs, and the terminal agree. A stage job claims a task
-with ``take`` (one compare-and-set inside one immediate transaction); a run acts only on the
-task it holds; any move clears the claim, and a run that ends without a move gets its claim
-released by the runner. Events are append-only and never pruned: a finished task is a
-labelled trace of how it got there.
+Tasks keep their request, selected path, accepted result revisions and append-only history.
+All supported callers share workflow_state's route resolver. Executable handoffs remain
+submissions until the controller accepts them after writers and required checks stop.
 
 Task reads also live here: listing and finished-history queries share filters and row
 conversion, so consumers do not need task SQL. Callers own display grouping and history
@@ -28,11 +22,11 @@ import re
 import sqlite3
 import unicodedata
 from collections.abc import Iterable, Mapping
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from . import db
+from . import db, workflow_state
 from .config import BUILTIN_STAGES, Config, Paths, ProjectConfig
 
 FINISHED = ("done", "cancelled")
@@ -67,6 +61,8 @@ class Task:
     ref: str
     title: str
     body: str
+    workflow_version: int
+    route: str | None
     stage: str
     previous_stage: str | None
     priority: int
@@ -289,6 +285,7 @@ def create(
     body: str = "",
     priority: int = 0,
     backlog: bool = False,
+    route: str | None = None,
     after: str | None = None,
     from_ref: str | None = None,
     actor: str,
@@ -302,7 +299,11 @@ def create(
     """
     key = project.strip().upper()
     owner = _project(config, key)
-    stages = owner.stage_names
+    try:
+        workflow_state.require_active(owner)
+        route, entry_stage = workflow_state.intake(owner, route)
+    except ValueError as exc:
+        raise TaskError(str(exc)) from exc
     title = clean_text(title, single_line=True)
     if not title:
         raise TaskError("the title is empty")
@@ -311,7 +312,7 @@ def create(
     with db.transaction(paths) as con:
         after_ref = _existing_ref(con, after, "--after", None)
         origin = _existing_ref(con, from_ref, "--from", None)
-        stage = "backlog" if backlog else "blocked" if after_ref else stages[0]
+        stage = "backlog" if backlog else "blocked" if after_ref else entry_stage
         number = con.execute(
             "SELECT coalesce(max(number), 0) + 1 FROM _enso_tasks WHERE project = ?", (key,)
         ).fetchone()[0]
@@ -340,6 +341,12 @@ def create(
         )
         task_id = cursor.lastrowid
         assert task_id is not None
+        con.execute(
+            "UPDATE _enso_tasks SET route=?, workflow_version=2 WHERE id=?", (route, task_id)
+        )
+        workflow_state.accept_output(
+            con, ref, "request", {"text": title + "\n\n" + body}, {}, actor=actor
+        )
         _record(
             con,
             task_id,
@@ -436,14 +443,11 @@ def list_tasks(
             params,
         ).fetchall()
     tasks = [_task(row) for row in rows]
-    if ready and config is not None:  # the None case was refused above; this narrows the type
-        tasks = [
-            task
-            for task in tasks
-            if task.project in config.projects
-            and config.projects[task.project].workspace == task.workspace
-            and task.stage in config.projects[task.project].agent_stages
-        ]
+    if ready and config is not None:
+        with db.reader(paths) as con:
+            tasks = [
+                task for task in tasks if _runnable(con, config.projects.get(task.project), task)
+            ]
     return tasks
 
 
@@ -568,29 +572,26 @@ def _derive(project: ProjectConfig, task: Task, run_id: str | None) -> list[Move
     claim = _claim_problem(task, run_id)
     targets: dict[str, tuple[str, list[str]]] = {}
     if stage == "backlog":
-        targets["advance"] = (names[0], [])
+        targets["advance"] = ("", [])
         targets["return"] = ("", ["a backlog task has nowhere to return to"])
         targets["block"] = ("", ["a backlog task is not in progress; advance it first"])
         targets["resume"] = ("", [f"{task.ref} is not blocked"])
     elif stage == "blocked":
         for move_id in ("advance", "return", "block"):
             targets[move_id] = ("", [f"{task.ref} is blocked; resume it first"])
-        resume_to = task.previous_stage if task.previous_stage in names else names[0]
-        targets["resume"] = (resume_to, [])
+        targets["resume"] = ("", [])
     elif stage in names:
         human = [f"{stage} is a human stage; only a person moves it"] if run_id is not None else []
         if stage in project.human_stages and human:
             for move_id in ("advance", "return", "block"):
                 targets[move_id] = ("", human)
         else:
-            targets["advance"] = (project.next_stage(stage), [])
+            targets["advance"] = ("", [])
             current_stage = project.stage(stage)
-            previous = (
-                current_stage.return_to if current_stage else None
-            ) or project.previous_stage(stage)
+            previous = current_stage.return_to if current_stage else None
             targets["return"] = (
                 previous or "",
-                [] if previous else [f"{stage} is the first stage"],
+                [] if previous else [f"{stage} has no declared return destination"],
             )
             targets["block"] = ("blocked", [])
         targets["resume"] = ("", [f"{task.ref} is not blocked"])
@@ -598,7 +599,20 @@ def _derive(project: ProjectConfig, task: Task, run_id: str | None) -> list[Move
         reason = finished or f"{stage} is not a stage of project {project.key}"
         for move_id in ("advance", "return", "block", "resume"):
             targets[move_id] = ("", [reason])
+    # The resolver is also used by writes; presentations never calculate their own route.
+    for move_id in ("advance", "return", "resume", "block"):
+        if targets[move_id][1]:
+            continue
+        try:
+            _route, target = workflow_state.destination(project, task, move_id)
+            targets[move_id] = (target, [])
+        except ValueError as exc:
+            targets[move_id] = ("", [str(exc)])
     targets["drop"] = ("cancelled", [finished] if finished else [])
+    if not project.active or task.workflow_version != 2:
+        targets = {
+            key: (target, ["legacy or paused workflow"]) for key, (target, _) in targets.items()
+        }
     moves: list[Move] = []
     for move_id in MOVES:
         if move_id == "drop" and run_id is not None:
@@ -620,7 +634,23 @@ def _derive(project: ProjectConfig, task: Task, run_id: str | None) -> list[Move
 
 def moves(config: Config, task: Task, *, env: Mapping[str, str]) -> list[Move]:
     """The moves available from where the task stands, for the packet and ``task show``."""
-    return _derive(_project(config, task.project, task.workspace), task, in_run(env))
+    project = _project(config, task.project, task.workspace)
+    reason = ""
+    with db.reader(config.paths) as con:
+        if _pending(con, task.ref):
+            reason = "pending lifecycle scripts must finish before another stage"
+        elif project.active and task.workflow_version == 2 and (stage := project.stage(task.stage)):
+            try:
+                workflow_state.prior_results(con, project, task)
+                workflow_state.input_ids(con, task.ref, stage, project)
+            except ValueError as exc:
+                reason = str(exc)
+    return [
+        replace(item, allowed=False, missing=(reason,))
+        if reason and item.allowed and item.id in ("advance", "return", "resume")
+        else item
+        for item in _derive(project, task, in_run(env))
+    ]
 
 
 def _check_force(force: bool, run_id: str | None) -> None:
@@ -717,13 +747,17 @@ def _settle_waiting(con: sqlite3.Connection, config: Config, task: Task, outcome
             continue
         if outcome == "done":
             project = config.projects.get(waiting.project)
-            if project is None or project.workspace != waiting.workspace:
+            if (
+                project is None
+                or project.workspace != waiting.workspace
+                or not project.active
+                or waiting.workflow_version != 2
+            ):
                 continue  # nowhere to resume to; it stays blocked for a person
-            to = (
-                waiting.previous_stage
-                if waiting.previous_stage in project.stage_names
-                else project.stage_names[0]
-            )
+            try:
+                _route, to = workflow_state.destination(project, waiting, "resume")
+            except ValueError:
+                continue
             _apply_move(
                 con,
                 waiting,
@@ -768,7 +802,7 @@ def _pending(con: sqlite3.Connection, ref: str) -> bool:
     return (
         con.execute(
             "SELECT 1 FROM _enso_workflow_events WHERE task_ref=? "
-            "AND status IN ('pending','running','failed') LIMIT 1",
+            "AND status IN ('pending','running','failed','uncertain') LIMIT 1",
             (ref,),
         ).fetchone()
         is not None
@@ -820,6 +854,10 @@ def check_land(config: Config, task: Task, run_id: str | None) -> None:
     if problem:
         raise TaskError(problem)
     project = _project(config, task.project, task.workspace)
+    try:
+        workflow_state.require_active(project, task)
+    except ValueError as exc:
+        raise TaskError(str(exc)) from exc
     if any(stage.checks or stage.integrate for stage in project.stages):
         raise TaskError(
             "this workflow owns integration; run its integrate stage "
@@ -852,11 +890,19 @@ def _transition_preflight(
         raise TaskError("lifecycle scripts cannot recursively move tasks")
     initial = get(paths, ref)
     project = _project(config, initial.project, initial.workspace)
+    try:
+        workflow_state.require_active(project, initial)
+    except ValueError as exc:
+        raise TaskError(str(exc)) from exc
     selected = project.stage(initial.stage)
     if move_id == "drop" and run_id is not None:
         raise TaskError("only a person can drop a task; block it with your reasoning instead")
     derived = {item.id: item for item in _derive(project, initial, run_id)}[move_id]
-    if not derived.allowed and not force:
+    if (
+        not derived.allowed
+        and not force
+        and not (move_id == "advance" and "choose a path" in "; ".join(derived.missing))
+    ):
         raise TaskError(f"cannot {move_id} {initial.ref}: {'; '.join(derived.missing)}")
     if initial.claim_run_id and force:
         raise TaskError("cannot force a live execution claim; stop its job before moving the task")
@@ -870,17 +916,15 @@ def _transition_preflight(
             "required stage checks must be accepted by Enso; "
             "run the stage job or enso workflow verify"
         )
-    if move_id == "resume" and to in project.stage_names and selected is None:
-        project = _project(config, initial.project, initial.workspace)
-        expected = (
-            initial.previous_stage
-            if initial.previous_stage in project.stage_names
-            else project.stage_names[0]
-        )
-        if any(stage.checks or stage.integrate for stage in project.stages) and project.index(
-            to
-        ) > project.index(expected):
-            raise TaskError("resume cannot skip required workflow stages")
+    if move_id == "resume" and to is not None:
+        try:
+            _route, expected = workflow_state.destination(project, initial, "resume")
+        except ValueError as exc:
+            raise TaskError(str(exc)) from exc
+        if to != expected:
+            raise TaskError(
+                "resume returns to the interrupted stage; use workflow reroute to change paths"
+            )
     if run_id and move_id in ("advance", "return"):
         workflows.start(paths, config, initial.ref, run_id)
 
@@ -899,6 +943,9 @@ def move(
     force: bool = False,
     refs: Iterable[tuple[str, str]] = (),
     attention: bool = False,
+    route: str | None = None,
+    output: Any = None,
+    approve: str | None = None,
 ) -> Task:
     """Apply one derived move; ``TaskError`` says exactly why when it is refused.
 
@@ -917,24 +964,30 @@ def move(
 
     _transition_preflight(paths, config, ref, move_id, run_id, force, to)
     worktree_problem = _worktree_problem(paths, config, ref) if move_id == "advance" else None
+    candidate = workflows.approval_candidate(paths, config, get(paths, ref))
     with db.transaction(paths) as con:
         task = _load(con, ref)
         _check_pending_move(con, task, move_id)
         project = _project(config, task.project, task.workspace)
         derived = {item.id: item for item in _derive(project, task, run_id)}[move_id]
         claim = _claim_problem(task, run_id)
-        if not derived.allowed and not (force and derived.missing == (claim,)):
+        if (
+            not derived.allowed
+            and not (force and derived.missing == (claim,))
+            and not (
+                route
+                and not claim
+                and move_id == "advance"
+                and "choose a path" in "; ".join(derived.missing)
+            )
+        ):
             raise TaskError(f"cannot {move_id} {task.ref}: {'; '.join(derived.missing)}")
-        target = derived.to
-        if to is not None:
-            if move_id != "resume":
-                raise TaskError("--to only applies to resume")
-            if to not in project.stage_names:
-                raise TaskError(
-                    f"{to!r} is not a stage of {project.key}; use one of "
-                    f"{', '.join(project.stage_names)}"
-                )
-            target = to
+        try:
+            chosen, target = workflow_state.destination(project, task, move_id, route)
+        except ValueError as exc:
+            raise TaskError(str(exc)) from exc
+        if to is not None and move_id != "resume":
+            raise TaskError("--to only applies to resume")
         text = _message(move_id, message) if derived.requires_message else clean_text(message)
         after_ref = task.after_ref
         if after is not None:
@@ -946,7 +999,35 @@ def move(
         if worktree_problem is not None:
             raise TaskError(f"cannot {move_id} {task.ref}: {worktree_problem}")
         if run_id is not None and move_id in ("advance", "return"):
-            return workflows.submit(con, task, move_id, target, text, actor, run_id, attached)
+            return workflows.submit(
+                con,
+                task,
+                move_id,
+                target,
+                text,
+                actor,
+                run_id,
+                attached,
+                route=chosen,
+                output=output,
+                approve=approve,
+            )
+        if move_id in ("advance", "return") and project.stage(task.stage):
+            return workflows.accept_immediate(
+                con,
+                config,
+                task,
+                move_id,
+                target,
+                text,
+                actor,
+                chosen,
+                output,
+                attached,
+                approve,
+                candidate,
+            )
+        con.execute("UPDATE _enso_tasks SET route=? WHERE id=?", (chosen, task.id))
         moved = _apply_move(
             con,
             task,
@@ -978,6 +1059,42 @@ def move(
 # -- Claims -------------------------------------------------------------------
 
 
+def _runnable(con: sqlite3.Connection, project: ProjectConfig | None, task: Task) -> bool:
+    if (
+        project is None
+        or not project.active
+        or task.workspace != project.workspace
+        or task.workflow_version != 2
+        or task.stage not in project.agent_stages
+        or task.claim_run_id
+        or _pending(con, task.ref)
+        or con.execute(
+            "SELECT 1 FROM _enso_workflow_transactions WHERE task_ref=? "
+            "AND status IN ('working','submitted','checking','repairing') LIMIT 1",
+            (task.ref,),
+        ).fetchone()
+    ):
+        return False
+    stage = project.stage(task.stage)
+    assert stage is not None
+    try:
+        workflow_state.prior_results(con, project, task)
+        workflow_state.input_ids(con, task.ref, stage, project)
+    except ValueError:
+        return False
+    return True
+
+
+def _readiest(con: sqlite3.Connection, project: ProjectConfig, stage: str) -> sqlite3.Row | None:
+    rows = con.execute(
+        "SELECT * FROM _enso_tasks WHERE project=? AND workspace=? AND stage=? "
+        "AND claim_run_id IS NULL AND workflow_version=2 "
+        "ORDER BY priority DESC, created_at, number",
+        (project.key, project.workspace, stage),
+    )
+    return next((row for row in rows if _runnable(con, project, _task(row))), None)
+
+
 def take(
     paths: Paths, config: Config, project: str, stage: str, *, run_id: str, actor: str
 ) -> Task | None:
@@ -987,22 +1104,14 @@ def take(
     WHERE clause, so two runs can never hold the same task even outside SQLite's locking.
     """
     key = project.strip().upper()
-    if stage not in _project(config, key).agent_stages:
+    owner = _project(config, key)
+    if not owner.active:
+        return None
+    if stage not in owner.agent_stages:
         raise TaskError(f"{stage} is not an agent stage of {key}")
     stamp = db.now()
     with db.transaction(paths) as con:
-        row = con.execute(
-            """SELECT id FROM _enso_tasks
-                WHERE project = ? AND workspace = ? AND stage = ? AND claim_run_id IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
-                    WHERE e.task_ref = _enso_tasks.ref
-                    AND e.status IN ('pending','running','failed'))
-                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_transactions x
-                    WHERE x.task_ref = _enso_tasks.ref
-                    AND x.status IN ('working','submitted','checking','repairing'))
-                ORDER BY priority DESC, created_at, number LIMIT 1""",
-            (key, _project(config, key).workspace, stage),
-        ).fetchone()
+        row = _readiest(con, owner, stage)
         if row is None:
             return None
         cursor = con.execute(
@@ -1046,22 +1155,13 @@ def orphaned_job_claims(paths: Paths) -> list[Task]:
 
 def ready(paths: Paths, config: Config, project: str, stage: str) -> bool:
     """Whether ``take`` would find something; the scheduler asks this every tick."""
-    key = project.strip().upper()
-    if stage not in _project(config, key).agent_stages:
-        raise TaskError(f"{stage} is not an agent stage of {key}")
+    owner = _project(config, project.strip().upper())
+    if not owner.active:
+        return False
+    if stage not in owner.agent_stages:
+        raise TaskError(f"{stage} is not an agent stage of {owner.key}")
     with db.reader(paths) as con:
-        row = con.execute(
-            """SELECT 1 FROM _enso_tasks
-                WHERE project = ? AND workspace = ? AND stage = ? AND claim_run_id IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_events e
-                    WHERE e.task_ref = _enso_tasks.ref
-                    AND e.status IN ('pending','running','failed'))
-                  AND NOT EXISTS (SELECT 1 FROM _enso_workflow_transactions x
-                    WHERE x.task_ref = _enso_tasks.ref
-                    AND x.status IN ('working','submitted','checking','repairing')) LIMIT 1""",
-            (key, _project(config, key).workspace, stage),
-        ).fetchone()
-    return row is not None
+        return _readiest(con, owner, stage) is not None
 
 
 def release(
@@ -1150,6 +1250,16 @@ def edit(
             f"UPDATE _enso_tasks SET {assignments}, updated_at = ? WHERE id = ?",
             (*changes.values(), db.now(), task.id),
         )
+        if task.workflow_version == 2 and (title is not None or body is not None):
+            revised = _reload(con, task.id)
+            workflow_state.accept_output(
+                con,
+                task.ref,
+                "request",
+                {"text": revised.title + "\n\n" + revised.body},
+                {},
+                actor=actor,
+            )
         _record(con, task.id, "edited", actor, run_id, payload=old)
         return _reload(con, task.id)
 
@@ -1248,6 +1358,9 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
         if task.claim_run_id
         else None
     )
+    candidate = workflows.approval_candidate(paths, config, task)
+    with db.reader(paths) as con:
+        contract = workflow_state.describe(con, project, task, candidate)
     return {
         "ref": task.ref,
         "project": task.project,
@@ -1266,7 +1379,7 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
         "entered_stage_at": task.entered_stage_at,
         "created_at": task.created_at,
         "updated_at": task.updated_at,
-        "moves": [item.as_dict() for item in _derive(project, task, in_run(env))],
+        "moves": [item.as_dict() for item in moves(config, task, env=env)],
         "handoff": (
             {**{key: getattr(handoff, key) for key in _HANDOFF_KEYS}, "at": handoff.created_at}
             if handoff
@@ -1293,6 +1406,7 @@ def context(paths: Paths, config: Config, ref: str, *, env: Mapping[str, str]) -
         ],
         "refs": [{"kind": item.kind, "value": item.value} for item in attached],
         "events_total": len(history),
+        "contract": contract,
         "workflow": workflows.history(paths, ref),
     }
 
@@ -1310,6 +1424,25 @@ def _move_label(item: dict[str, Any]) -> str:
 def _data_lines(text: str) -> list[str]:
     """Untrusted text as block lines: each non-empty line indented, so none can pose as Enso's."""
     return [DATA_INDENT + line if line else "" for line in text.split("\n")]
+
+
+def _contract_lines(contract: dict[str, Any]) -> list[str]:
+    lines: list[str] = []
+    if contract:
+        lines.append(f"Path: {contract['route'] or 'unresolved'} · Workflow: {contract['status']}")
+        if contract["pending"]:
+            lines.extend(["Pending:", *_data_lines(contract["pending"])])
+        lines.extend(["Expected output:", *_data_lines(contract["expected_output"])])
+        for name, item in contract["inputs"].items():
+            lines.append(f"Accepted input: {name} revision {item['revision']} ({item['id']})")
+            lines.extend(_data_lines(json.dumps(item["data"], ensure_ascii=False)))
+        if contract["choices"]:
+            lines.append("Declared route choices (--route): " + ", ".join(contract["choices"]))
+        lines.append(
+            "Submit the deliverable with --output-file PATH (text or .json); keep the "
+            "request unchanged."
+        )
+    return lines
 
 
 def render_task_block(
@@ -1345,6 +1478,7 @@ def render_task_block(
         f"Project: {ctx['project']} ({ctx['project_name']}) · Stage: {stage} ({position})"
         f" · Priority: {ctx['priority']}",
     ]
+    lines.extend(_contract_lines(ctx.get("contract", {})))
     allowed = [item for item in ctx["moves"] if item["allowed"]]
     if allowed:
         lines.append("Moves: " + " · ".join(_move_label(item) for item in allowed))

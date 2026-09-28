@@ -25,7 +25,7 @@ from urllib.parse import quote
 
 from .config import LEGACY_HOME_MESSAGE, Paths, split_job_ref
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 APPLICATION_ID = 0x454E534F  # ENSO: distinguishes the new schema line from 0.1.x.
 
 _SCHEMA = """
@@ -103,6 +103,8 @@ CREATE TABLE _enso_tasks (
   ref TEXT NOT NULL UNIQUE,
   title TEXT NOT NULL,
   body TEXT NOT NULL DEFAULT '',
+  workflow_version INTEGER NOT NULL DEFAULT 2,
+  route TEXT,
   stage TEXT NOT NULL,
   previous_stage TEXT,
   priority INTEGER NOT NULL DEFAULT 0,
@@ -212,6 +214,13 @@ BEGIN
   DELETE FROM _enso_beat_runs WHERE beat_id = OLD.id;
 END;
 
+CREATE TABLE _enso_workflow_outputs (
+  id TEXT PRIMARY KEY, task_ref TEXT NOT NULL, stage TEXT NOT NULL,
+  revision INTEGER NOT NULL, transaction_id TEXT, data TEXT NOT NULL,
+  inputs TEXT NOT NULL, digest TEXT NOT NULL, valid INTEGER NOT NULL DEFAULT 1,
+  actor TEXT NOT NULL, created_at TEXT NOT NULL,
+  UNIQUE(task_ref, stage, revision));
+CREATE INDEX _enso_workflow_outputs_task ON _enso_workflow_outputs (task_ref, valid);
 CREATE TABLE _enso_workflow_transactions (
   id TEXT PRIMARY KEY, task_ref TEXT NOT NULL, run_id TEXT NOT NULL,
   stage TEXT NOT NULL, status TEXT NOT NULL, data TEXT NOT NULL);
