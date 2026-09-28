@@ -127,8 +127,11 @@ def _plan(
     invalid = [
         t.ref
         for t in existing
-        if t.stage not in (*names, *tasks.BUILTIN_STAGES)
-        or (t.previous_stage and t.previous_stage not in names)
+        if t.workflow_version == 2
+        and (
+            t.stage not in (*names, *tasks.BUILTIN_STAGES)
+            or (t.previous_stage and t.previous_stage not in names)
+        )
     ]
     if invalid:
         raise ValueError(
@@ -137,7 +140,9 @@ def _plan(
     path = paths.project(project.workspace, key) / "PROJECT.md"
     project_document = frontmatter.read(path)
     entry = dict(project_document.fields)
-    entry.update(stages=stages, max_concurrency=3 if development else 1)
+    entry.update(stages=stages, workflow=2, enabled=False, max_concurrency=3 if development else 1)
+    entry.pop("paths", None)
+    entry.pop("default_path", None)
     if hooks:
         # The project's own hooks win; the preset only fills in the ones it lacks.
         entry["hooks"] = {**hooks, **dict(entry.get("hooks") or {})}
@@ -167,17 +172,11 @@ def _plan(
         if document is None:
             raise ValueError(f"cannot archive {job.path}: {error}")
         fields = dict(document.fields)
-        fields.update(enabled=False)
-        fields.pop("project", None)
-        fields.pop("stage", None)
-        fields.setdefault("schedule", "0 0 1 1 *")
-        # Archived command-stage jobs become inert, valid periodic records.
-        if jobs.command_stage(job, config):
-            fields["command"] = ":"
+        fields.update(enabled=False, workflow=1)
         changes[job.path] = _change(
             paths,
             job.path,
-            _job_text(job.path, fields, document.body or "Archived workflow stage.", changed),
+            jobs.render(fields, document.body).encode(),
         )
     changes.update(_script_changes(paths, paths.project(project.workspace, key), entry, scripts))
     targets = []
@@ -242,6 +241,7 @@ def _job_changes(
             "name": f"{project.name}: {stage.name}",
             "project": project.key,
             "stage": stage.name,
+            "workflow": 2,
             "enabled": False,
             "timeout": 3600 if stage.checks and not stage.integrate else 1800,
         }
@@ -414,3 +414,25 @@ def initialize(
                 f"workflow migration paused safely: {exc}; rerun enso workflow init {key} "
                 f"to resume the recorded operation. Backups: {directory}"
             ) from exc
+
+
+def enable(paths: Paths, key: str, workspace: str | None) -> dict[str, Any]:
+    """Explicit activation of a validated new definition; legacy tasks/jobs stay inert."""
+    workflows._operator()
+    with config_lock(paths):
+        config = load_config(paths)
+        selected = resolve_workspace(paths, workspace)
+        project = tasks._project(config, key, selected)
+        if project.workflow != 2:
+            raise ValueError("author a workflow: 2 definition before enabling it")
+        _idle(paths, key)
+        all_jobs, faults = jobs.load_jobs(paths, config)
+        for job in all_jobs:
+            if job.project == key and job.workflow == 2 and job.ref in faults:
+                raise ValueError("; ".join(faults[job.ref]))
+        path = paths.project(selected, key) / "PROJECT.md"
+        document = frontmatter.read(path)
+        maintenance.write_bytes(
+            path, frontmatter.render({**document.fields, "enabled": True}, document.body).encode()
+        )
+        return {"project": key, "workspace": selected, "enabled": True}

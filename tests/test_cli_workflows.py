@@ -207,7 +207,7 @@ def test_replacement_preserves_scripts_tasks_and_history_and_retires_original_jo
     loaded, faults = jobs.load_jobs(enso_home, load_config(enso_home))
     assert not faults
     archived = next(job for job in loaded if job.dir_name == "old-build")
-    assert not archived.enabled and archived.project is None and archived.schedule
+    assert not archived.enabled and archived.project == "EN" and archived.workflow == 1
 
 
 def test_initialization_refuses_live_claims_and_preserves_config(

@@ -213,7 +213,7 @@ def test_manual_moves_and_resume_cannot_skip_gates(enso_home, project_config):
             message="pretend passed",
         )
     tasks.move(enso_home, config, task.ref, "block", actor="user:test", run_id=None, message="wait")
-    with pytest.raises(tasks.TaskError, match="cannot skip"):
+    with pytest.raises(tasks.TaskError, match="interrupted stage"):
         tasks.move(
             enso_home, config, task.ref, "resume", actor="user:test", run_id=None, to="review"
         )
@@ -299,7 +299,13 @@ async def test_operator_verify_checks_a_human_checkpoint(enso_home, project_conf
         ],
     )
     task = tasks.create(enso_home, config, "EN", "T", actor="user:test")
-    result = await workflows.verify_manual(enso_home, config, task.ref, "Reviewed actual output")
+    result = await workflows.verify_manual(
+        enso_home,
+        config,
+        task.ref,
+        "Reviewed actual output",
+        approve=tasks.context(enso_home, config, task.ref, env={})["contract"]["approval"],
+    )
     assert result.status == "accepted" and tasks.get(enso_home, task.ref).finished
 
 
@@ -532,7 +538,14 @@ async def test_approving_at_a_human_stage_lets_changed_tests_land_without_stoppi
     await workflows.drain_events(enso_home, config, ref=task.ref)
     assert await workflows.approve_rules(enso_home, config, task.ref, "Reviewed in QA") is None
     tasks.move(
-        enso_home, config, task.ref, "advance", actor="user:test", run_id=None, message="QA passed"
+        enso_home,
+        config,
+        task.ref,
+        "advance",
+        actor="user:test",
+        run_id=None,
+        message="QA passed",
+        approve=tasks.context(enso_home, config, task.ref, env={})["contract"]["approval"],
     )
     await workflows.drain_events(enso_home, config, ref=task.ref)
     claim(enso_home, config, task.ref, "r2")
@@ -645,7 +658,11 @@ async def test_operator_reset_replenishes_exhausted_return_budget(
     enso_home: Paths,
     project_config: Config,
 ) -> None:
-    config = configure(enso_home, project_config, ["work", {"name": "review", "max_returns": 1}])
+    config = configure(
+        enso_home,
+        project_config,
+        ["work", {"name": "review", "max_returns": 1, "return_to": "work"}],
+    )
     task = tasks.create(enso_home, config, "EN", "Review loop", actor="user:test")
     for run_id in ("r1", "r2"):
         tasks.move(
@@ -981,3 +998,41 @@ async def test_lifecycle_missing_project_records_failure_without_changing_owner(
     assert event["status"] == "failed" and str(directory) in event["error"]
     assert event["workspace"] == "default" and event["attempts"] == 1
     assert not (enso_home.workspace("default") / "misplaced").exists()
+
+
+@pytest.mark.asyncio
+async def test_git_candidate_changed_after_human_approval_cannot_land(
+    enso_home, project_config, repo
+):
+    config = configure(
+        enso_home,
+        project_config,
+        [
+            "build",
+            {"name": "qa", "human": True, "inputs": ["build"], "return_to": "build"},
+            {"name": "merge", "integrate": True, "inputs": ["build", "qa"]},
+        ],
+        repo=repo,
+    )
+    task = held(enso_home, config)
+    submit(enso_home, config, task.ref)
+    assert (await workflows.evaluate(enso_home, config, task.ref, "r1", {})).status == "accepted"
+    release_after_acceptance(enso_home, task.ref, "r1")
+    approval = tasks.context(enso_home, config, task.ref, env={})["contract"]["approval"]
+    tasks.move(
+        enso_home,
+        config,
+        task.ref,
+        "advance",
+        actor="user:test",
+        run_id=None,
+        message="Reviewed this candidate",
+        approve=approval,
+    )
+    worktree = Path(worktrees.lookup(enso_home, task.ref)["path"])
+    commit_file(worktree, "unreviewed.txt", "Changed after approval", "feat: add unreviewed work")
+    claim(enso_home, config, task.ref, "r2")
+    submit(enso_home, config, task.ref, "r2")
+    result = await workflows.evaluate(enso_home, config, task.ref, "r2", {})
+    assert result.status == "failed" and "changed after human approval" in result.feedback
+    assert not (repo / "unreviewed.txt").exists()

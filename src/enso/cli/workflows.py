@@ -3,17 +3,22 @@
 from __future__ import annotations
 
 import asyncio
+import os
+from pathlib import Path
 
 import typer
 
 from .. import maintenance, tasks, workflow_setup, workflows
 from ..config import ConfigError, Paths
 from .common import JSON_FLAG, WORKSPACE, echo_json, fail, load
-from .tasks import _scope, _text
+from .tasks import _output, _scope, _text
 
 workflow_app = typer.Typer(
     no_args_is_help=True, help="Configure workflows and inspect engine acceptance."
 )
+
+
+OUTPUT_FILE = typer.Option(None, "--output-file", help="Text or JSON stage result.")
 
 
 @workflow_app.callback()
@@ -33,9 +38,21 @@ def preset(name: str, lint: str | None, test: str | None) -> list[str | dict]:
     checks = [{"name": "lint", "command": lint}, {"name": "tests", "command": test}]
     return [
         {"name": "build", "worktree": True, "checks": checks, "max_repairs": 2},
-        {"name": "review", "worktree": True, "return_to": "build", "max_returns": 1},
-        {"name": "qa", "human": True, "return_to": "build"},
-        {"name": "merge", "integrate": True, "worktree": True, "checks": checks},
+        {
+            "name": "review",
+            "inputs": ["request", "build"],
+            "worktree": True,
+            "return_to": "build",
+            "max_returns": 1,
+        },
+        {"name": "qa", "inputs": ["build", "review"], "human": True, "return_to": "build"},
+        {
+            "name": "merge",
+            "inputs": ["build", "review", "qa"],
+            "integrate": True,
+            "worktree": True,
+            "checks": checks,
+        },
     ]
 
 
@@ -167,6 +184,7 @@ def show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG)
     try:
         ref = tasks.get(paths, ref).ref
         result = {
+            "contract": tasks.context(paths, config, ref, env=os.environ)["contract"],
             "transactions": workflows.history(paths, ref),
             "events": workflows.event_history(paths, ref),
         }
@@ -175,6 +193,7 @@ def show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG)
     if as_json:
         echo_json(result)
     else:
+        typer.echo("\n".join(tasks._contract_lines(result["contract"])))
         for tx in result["transactions"]:
             typer.echo(
                 f"{tx['stage']} → {tx['to_stage'] or 'pending'}: {tx['status']} ({tx['id'][:8]})"
@@ -207,7 +226,7 @@ def _recovery(ref: str, message: str, action: str, as_json: bool, workspace: str
         if result is not None and result.status != "accepted":
             raise tasks.TaskError(result.feedback)
         stage = tasks.get(paths, ref).stage
-    except (tasks.TaskError, OSError) as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(
@@ -223,11 +242,35 @@ def _recovery(ref: str, message: str, action: str, as_json: bool, workspace: str
 def verify(
     ref: str,
     message: str = typer.Option(..., "--message"),
+    route: str | None = typer.Option(None, "--route"),
+    output_file: Path | None = OUTPUT_FILE,
+    approve: str | None = typer.Option(None, "--approve"),
     workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
-    """Run the current stage checks and accept an operator handoff; no model or bypass."""
-    _recovery(ref, message, "verify", as_json, workspace)
+    """Check and accept an operator result against the current input revisions."""
+    paths = Paths.from_env()
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
+    try:
+        result = asyncio.run(
+            workflows.verify_manual(
+                paths,
+                config,
+                ref,
+                message,
+                route=route,
+                output=_output(output_file),
+                approve=approve,
+            )
+        )
+        if result.status != "accepted":
+            raise tasks.TaskError(result.feedback)
+    except (tasks.TaskError, ValueError, OSError) as exc:
+        fail([str(exc)], as_json=as_json)
+    echo_json(
+        {"ok": True, "ref": ref, "stage": tasks.get(paths, ref).stage}
+    ) if as_json else typer.echo(f"Accepted {ref}")
 
 
 @workflow_app.command("retry")
@@ -250,3 +293,72 @@ def approve_rules(
 ) -> None:
     """Approve changed tests or check files; a handoff blocked on them continues its checks."""
     _recovery(ref, message, "approve-rules", as_json, workspace)
+
+
+@workflow_app.command("enable")
+def enable(key: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_FLAG) -> None:
+    """Validate and activate a new workflow; preserved legacy work remains paused."""
+    try:
+        result = workflow_setup.enable(Paths.from_env(), key, workspace)
+    except (ConfigError, tasks.TaskError, ValueError, OSError) as exc:
+        fail([str(exc)], as_json=as_json)
+    echo_json(result) if as_json else typer.echo(f"Enabled workflow {key}")
+
+
+def _route(
+    ref: str, route: str, message: str, workspace: str | None, as_json: bool, adopt: bool
+) -> None:
+    paths = Paths.from_env()
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
+    try:
+        task = workflows.reroute(paths, config, ref, route, message, adopt=adopt)
+    except (tasks.TaskError, ValueError, OSError) as exc:
+        fail([str(exc)], as_json=as_json)
+    echo_json(task.as_dict()) if as_json else typer.echo(f"{task.ref}: {task.route} → {task.stage}")
+
+
+@workflow_app.command("reroute")
+def reroute(
+    ref: str,
+    route: str = typer.Option(..., "--route"),
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
+) -> None:
+    """Select a declared path and revisit its first missing or stale result."""
+    _route(ref, route, message, workspace, as_json, False)
+
+
+@workflow_app.command("adopt")
+def adopt(
+    ref: str,
+    route: str = typer.Option(..., "--route"),
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
+) -> None:
+    """Deliberately restart preserved legacy work on a new path, keeping its history."""
+    _route(ref, route, message, workspace, as_json, True)
+
+
+@workflow_app.command("resolve-event")
+def resolve_event(
+    ref: str,
+    event: str,
+    decision: str,
+    message: str = typer.Option(..., "--message"),
+    workspace: str | None = WORKSPACE,
+    as_json: bool = JSON_FLAG,
+) -> None:
+    """Record delivery or authorize retry for an uncertain external lifecycle action."""
+    paths = Paths.from_env()
+    config = load(paths, as_json=as_json)
+    _scope(paths, config, workspace, ref=ref, as_json=as_json)
+    try:
+        workflows.resolve_event(paths, tasks.parse_ref(ref), event, decision, message)
+    except (tasks.TaskError, ValueError, OSError) as exc:
+        fail([str(exc)], as_json=as_json)
+    echo_json({"ok": True, "event": event, "decision": decision}) if as_json else typer.echo(
+        f"Resolved {event}"
+    )

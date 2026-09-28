@@ -54,7 +54,14 @@ TELEGRAM_CONFIG: dict = {
 }
 # Two projects: a plain agent pipeline, and one with a human stage in the middle.
 PROJECTS: dict = {
-    "EN": {"name": "Enso", "stages": ["triage", "todo", "review"]},
+    "EN": {
+        "name": "Enso",
+        "stages": [
+            "triage",
+            {"name": "todo", "return_to": "triage"},
+            {"name": "review", "return_to": "todo"},
+        ],
+    },
     "MKT": {
         "name": "Marketing",
         "stages": ["draft", "approve:human", "release"],
@@ -263,7 +270,7 @@ def project_config(enso_home: Paths, raw_config: dict, monkeypatch: pytest.Monke
 def write_project(paths: Paths, key: str, fields: dict, workspace: str = "default") -> Path:
     path = paths.project(workspace, key) / "PROJECT.md"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(frontmatter.render(fields, ""), "utf-8")
+    path.write_text(frontmatter.render({"workflow": 2, "enabled": True, **fields}, ""), "utf-8")
     return path
 
 
@@ -404,6 +411,8 @@ def write_job(
     prompt = prompt.replace("{{prerun_output}}", "{{gate_output}}")
     path = paths.workspace_jobs(workspace) / dir_name / "JOB.md"
     path.parent.mkdir(parents=True, exist_ok=True)
+    if "stage" in front:
+        front.setdefault("workflow", 2)
     path.write_text(render(front, prompt))
     return path
 

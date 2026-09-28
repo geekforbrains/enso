@@ -281,3 +281,36 @@ def test_committed_migration_recovers_only_its_gate_never_its_data(local, monkey
             ("newer",),
             ("original",),
         ]
+
+
+def test_explicit_branch_switch_migrates_before_restart_and_preserves_launcher(
+    local, monkeypatch, tmp_path
+):
+    development.run(local.paths, local.repository)
+    old_launcher = local.launcher.read_bytes()
+    registry(local, monkeypatch)
+    feature = tmp_path / "feature"
+    (feature / ".venv/bin").mkdir(parents=True)
+    (feature / ".venv/bin/enso").write_text("new CLI")
+    original = update_services.run_command
+
+    def command(args, **kwargs):
+        if args[:3] == ["git", "branch", "--show-current"] and kwargs.get("cwd") == feature:
+            return "feat/workflows"
+        return original(args, **kwargs)
+
+    monkeypatch.setattr(update_services, "run_command", command)
+    with pytest.raises(UpdateError, match="must run from develop"):
+        development.run(local.paths, feature, migrate=True, refresh=True)
+    result = development.run(
+        local.paths, feature, migrate=True, refresh=True, branch="feat/workflows"
+    )
+    assert result["ok"] and str(feature) in local.launcher.read_text()
+    assert (
+        local.paths.runtime_dir
+        / "development"
+        / read_json(development.state_path(local.paths))["id"]
+        / "launcher"
+    ).read_bytes() == old_launcher
+    assert migrations.read_revision(local.paths) == 2
+    assert not maintenance.paused(local.paths)

@@ -42,6 +42,31 @@
   </dl>
 </div>
 
+{% if contract %}
+<div class="shead"><h2>Workflow</h2></div>
+<div class="panel">
+  <dl class="kv">
+    <dt>Status</dt><dd>{{ contract.status }}</dd>
+    <dt>Path</dt><dd>{{ contract.route or 'Unresolved' }}</dd>
+    <dt>Choices</dt><dd>{{ contract.choices|join(', ') or 'No decision at this stage' }}</dd>
+    <dt>Required inputs</dt><dd>{{ contract.required_inputs|join(', ') or 'None' }}</dd>
+    <dt>Expected output</dt><dd>{{ contract.expected_output }}</dd>
+    <dt>Actions</dt><dd>{% for move in moves %}<div>{{ move.id }}{% if move.to %} → {{ move.to }}{% endif %}{% if not move.allowed %}: {{ move.missing|join('; ') }}{% endif %}</div>{% endfor %}</dd>
+    {% if contract.pending %}<dt>Pending action</dt><dd>{{ contract.pending }}</dd>{% endif %}
+  </dl>
+</div>
+<div class="shead"><h2>Accepted outputs and revisions</h2></div>
+{% for output in contract.outputs %}
+<details class="panel workflow-result">
+  <summary>{{ output.stage }} · revision {{ output.revision }} · {{ 'current' if output.valid else 'stale' }}</summary>
+  <dl class="kv"><dt>ID</dt><dd><code>{{ output.id }}</code></dd><dt>SHA256</dt><dd><code>{{ output.digest }}</code></dd><dt>Actor</dt><dd>{{ output.actor }}</dd><dt>Inputs</dt><dd><code>{{ output.inputs|tojson }}</code></dd></dl>
+  {% if output.data.text %}<pre class="output bare" tabindex="0">{{ output.data.text }}</pre>{% endif %}
+  {% if output.data.data is defined %}<pre class="output bare" tabindex="0">{{ output.data.data|tojson(indent=2) }}</pre>{% endif %}
+  {% if output.data.artifacts %}<pre class="output bare" tabindex="0">{{ output.data.artifacts|tojson(indent=2) }}</pre>{% endif %}
+</details>
+{% else %}<div class="panel"><p class="empty">No accepted results in this engine. Preserved history is below.</p></div>{% endfor %}
+{% endif %}
+
 {% if worktree %}
 <div class="shead"><h2>Worktree</h2></div>
 <div class="panel">

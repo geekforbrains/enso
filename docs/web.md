@@ -260,6 +260,13 @@ creates no persistent index or missing directories and never changes notes or me
 
 ### Tasks
 
+Task details show the selected path and workflow status, required inputs, expected result,
+pending routing/approval action, and accepted output revisions with IDs, hashes, content,
+consumed input IDs and actor. Stale revisions remain inspectable. Legacy/paused work appears
+as needing attention and cannot run. The timeline retains execution, checks, decisions,
+failures and lifecycle delivery evidence. These are the same contracts exposed by task JSON
+and the agent's Task block; use the CLI to submit results and record decisions.
+
 The [task board](tasks.md) at `/tasks` shows projects beside the board on desktop and above
 it on phones. Project entries show name, key, workspace, and unfinished count, including
 configured projects with no tasks. Tasks with missing project definitions remain reachable.

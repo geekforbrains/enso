@@ -879,6 +879,9 @@ def sweep(paths: Paths, project: ProjectConfig) -> list[str]:
     Ignored files are removed with a clean worktree; teardown can archive valuable local
     artifacts first. Dirty, unmerged, failed-hook and actively owned worktrees stay visible.
     """
+    if not project.active:
+        return []
+
     try:
         with db.reader(paths) as con:
             records = [
@@ -894,6 +897,8 @@ def sweep(paths: Paths, project: ProjectConfig) -> list[str]:
     removed = []
     for record in records:
         ref = record["ref"]
+        if tasks.get(paths, ref).workflow_version != 2:
+            continue
         try:
             with execution_context(paths, ref), landing_context(paths, project, ref):
                 if _remove_owned(paths, project, record):

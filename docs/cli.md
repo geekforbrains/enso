@@ -528,6 +528,12 @@ these attempts too. Rows without recorded attempts have an empty array.
 
 ## Tasks and projects
 
+`task add --route NAME` selects a declared path at intake. `task advance --output-file PATH`
+submits a deliverable and can include a permitted `--route` decision. Human stages require
+`--approve DIGEST` from `task show`; JSON exposes path, inputs, output revisions and pending
+actions under `contract`. `workflow enable`, `adopt`, `reroute` and `resolve-event` are explicit
+operator controls. See [Tasks](tasks.md#the-cli) for the complete command contract.
+
 The `task`, `project`, and `workflow` command families, including their syntax, workspace
 selection, JSON results, move guards, and recovery rules, are owned by [Tasks](tasks.md#the-cli).
 Use runtime `--help` for the accepted options. [Configuration](configuration.md#projects)

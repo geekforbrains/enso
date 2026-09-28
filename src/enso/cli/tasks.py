@@ -7,6 +7,7 @@ from the environment (never from a flag), and prints. A refused move exits 1 wit
 from __future__ import annotations
 
 import contextlib
+import json
 import os
 from datetime import timedelta
 from pathlib import Path
@@ -121,6 +122,9 @@ def _move(
     after: str | None = None,
     force: bool = False,
     refs: list[str] | None = None,
+    route: str | None = None,
+    output_file: Path | None = None,
+    approve: str | None = None,
 ) -> None:
     paths = Paths.from_env()
     config = load(paths, as_json=as_json)
@@ -135,16 +139,35 @@ def _move(
             run_id=tasks.in_run(os.environ),
             message=_text(message, as_json=as_json) or "",
             to=to,
+            route=route,
+            output=_output(output_file),
+            approve=approve,
             after=after,
             force=force,
             refs=_parse_refs(refs or [], as_json=as_json),
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     _emit(task, as_json=as_json, verb=move_id)
 
 
+def _output(path: Path | None) -> object:
+    if path is None:
+        return None
+    from ..workflow_state import MAX_RESULT_BYTES
+
+    with path.open("rb") as stream:
+        raw = stream.read(MAX_RESULT_BYTES + 1)
+    if len(raw) > MAX_RESULT_BYTES:
+        raise ValueError("output exceeds 256 KiB")
+    text = raw.decode("utf-8")
+    return json.loads(text) if path.suffix == ".json" else text
+
+
 # -- Commands -------------------------------------------------------------------
+
+
+OUTPUT_FILE = typer.Option(None, "--output-file", help="Text or JSON stage result.")
 
 
 @task_app.command("add")
@@ -154,6 +177,7 @@ def task_add(
     body: str | None = typer.Option(None, "--body", help="The spec."),
     body_file: Path | None = BODY_FILE,
     priority: int = typer.Option(0, "--priority", help="Higher runs first within a stage."),
+    route: str | None = typer.Option(None, "--route", help="Declared workflow path."),
     backlog: bool = typer.Option(False, "--backlog", help="Park it; not ready for any stage."),
     after: str | None = typer.Option(
         None, "--after", help="Start blocked on this task; resumed when it is done."
@@ -181,11 +205,12 @@ def task_add(
             ),
             priority=priority,
             backlog=backlog,
+            route=route,
             after=after,
             from_ref=from_ref,
             actor=tasks.actor_from_env(os.environ),
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     _emit(task, as_json=as_json, verb="created")
 
@@ -251,7 +276,7 @@ def task_show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_
     try:
         ctx = tasks.context(paths, config, ref, env=os.environ)
         history = tasks.events(paths, ref)
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json({**ctx, "events": [event.as_dict() for event in history]})
@@ -261,6 +286,17 @@ def task_show(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_
     typer.echo(f"project: {ctx['project']} ({ctx['project_name']}; stages {stages})")
     typer.echo(f"stage: {ctx['stage']}{' (needs attention)' if ctx['attention'] else ''}")
     typer.echo(f"priority: {ctx['priority']}")
+    contract = ctx["contract"]
+    typer.echo(f"workflow: {contract['status']}; path: {contract['route'] or 'unresolved'}")
+    if contract["pending"]:
+        typer.echo(contract["pending"])
+    typer.echo(f"expected output: {contract['expected_output']}")
+    for output in contract["outputs"]:
+        typer.echo(
+            f"{output['stage']} revision {output['revision']} ({output['id']}): "
+            f"{'current' if output['valid'] else 'stale'}"
+        )
+        typer.echo(json.dumps(output["data"], ensure_ascii=False))
     for key in ("after", "from"):
         if ctx[key]:
             typer.echo(f"{key}: {ctx[key]}")
@@ -292,6 +328,11 @@ def task_advance(
     ref: str,
     message: str = typer.Option(..., "--message", help=MESSAGE_HELP),
     refs: list[str] = REFS,
+    route: str | None = typer.Option(None, "--route"),
+    output_file: Path | None = OUTPUT_FILE,
+    approve: str | None = typer.Option(
+        None, "--approve", help="Input revision digest from task show."
+    ),
     force: bool = typer.Option(False, "--force", help=FORCE_HELP),
     workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
@@ -305,6 +346,9 @@ def task_advance(
         as_json=as_json,
         force=force,
         refs=refs,
+        route=route,
+        output_file=output_file,
+        approve=approve,
     )
 
 
@@ -316,7 +360,7 @@ def task_return(
     workspace: str | None = WORKSPACE,
     as_json: bool = JSON_FLAG,
 ) -> None:
-    """Send the task back to the previous stage."""
+    """Send the task to its declared return destination."""
     _move(ref, "return", workspace=workspace, message=message, as_json=as_json, force=force)
 
 
@@ -386,7 +430,7 @@ def task_release(
             reason="manual",  # only the runner's finalise records run_ended
             force=force,
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     _emit(task, as_json=as_json, verb="released")
 
@@ -420,7 +464,7 @@ def task_edit(
             after=after,
             force=force,
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     _emit(task, as_json=as_json, verb="edited")
 
@@ -446,7 +490,7 @@ def task_note(
             message=_text(text, as_json=as_json) or "",
             attention=attention,
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(event.as_dict())
@@ -471,7 +515,7 @@ def task_ref(
             actor=tasks.actor_from_env(os.environ),
             run_id=tasks.in_run(os.environ),
         )
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     if as_json:
         echo_json(attached.as_dict())
@@ -490,7 +534,7 @@ def task_land(ref: str, workspace: str | None = WORKSPACE, as_json: bool = JSON_
     _scope(paths, config, workspace, ref=ref, as_json=as_json)
     try:
         task = tasks.get(paths, ref)
-    except tasks.TaskError as exc:
+    except (tasks.TaskError, ValueError, OSError) as exc:
         fail([str(exc)], as_json=as_json)
     project = config.projects.get(task.project)
     if project is None or project.repo is None:

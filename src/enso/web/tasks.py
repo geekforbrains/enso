@@ -76,6 +76,8 @@ def _project_of(config: Config | None, task: tasks.Task) -> ProjectConfig | None
 def _task_state(task: tasks.Task, project: ProjectConfig | None) -> str:
     if task.finished:
         return task.stage
+    if task.workflow_version != 2 or (project and not project.active):
+        return "needs-you"
     if task.stage == "blocked":
         return "blocked"
     stage = project.stage(task.stage) if project else None
@@ -92,7 +94,13 @@ def _task_row(
     config: Config | None, task: tasks.Task, transaction: dict[str, Any] | None = None
 ) -> TaskRow:
     project = _project_of(config, task)
-    phase = ""
+    phase = (
+        "legacy / paused"
+        if task.workflow_version != 2
+        else "paused"
+        if project and not project.active
+        else ""
+    )
     if transaction and transaction.get("stage") == task.stage:
         status = transaction.get("status", "")
         if status in ("working", "submitted", "checking", "repairing", "interrupted", "blocked"):
@@ -445,7 +453,15 @@ def task_model(paths: Paths, ref_text: str) -> dict[str, Any] | None:
         "task": task,
         "claim_is_operator": _operator_verification(task.claim_run_id),
         "project_name": project.name if project else task.project,
-        "stages": list(project.stage_names) if project else [],
+        "stages": (
+            ctx["contract"]["paths"].get(task.route, [])
+            if task.route and ctx
+            else list(project.stage_names)
+            if project
+            else []
+        ),
+        "contract": ctx["contract"] if ctx else None,
+        "moves": ctx["moves"] if ctx else [],
         "spec": files.render_markdown(task.body) if task.body else None,
         "refs": attached or [],
         "worktree": worktree,

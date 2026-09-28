@@ -82,7 +82,7 @@ def test_add_show_and_list(enso_home: Paths, project_config: Config, tmp_path: P
         "priority: 2",
     ]
     assert "  advance to todo: available" in out
-    assert "  return: not available: triage is the first stage" in out
+    assert "  return: not available: triage has no declared return destination" in out
     assert "\n# Spec\n\nDo the thing.\n" in out
     assert out.splitlines()[-1].endswith(" created by user:") or " created" in out.splitlines()[-1]
     code, out, _ = run("show", "EN-1", "--json")
@@ -110,12 +110,17 @@ def test_moves_from_the_terminal(enso_home: Paths, project_config: Config) -> No
     code, out, _ = run("return", "EN-1", "--message", "redo", "--json")
     assert code == 0 and json.loads(out)["stage"] == "triage"
     code, _, err = run("return", "EN-1", "--message", "again")
-    assert code == 1 and err == "error: cannot return EN-001: triage is the first stage\n"
+    assert (
+        code == 1
+        and err == "error: cannot return EN-001: triage has no declared return destination\n"
+    )
     add("dependency")
     code, out, _ = run("block", "EN-1", "--message", "needs EN-002", "--after", "en-2")
     assert code == 0 and tasks.get(enso_home, "EN-001").after_ref == "EN-002"
     code, out, _ = run("resume", "EN-1", "--to", "review", "--json")
-    assert code == 0 and json.loads(out)["stage"] == "review"
+    assert code == 1 and "interrupted stage" in json.loads(out)["error"]
+    code, out, _ = run("resume", "EN-1", "--json")
+    assert code == 0 and json.loads(out)["stage"] == "triage"
     code, out, _ = run("drop", "EN-2", "--message", "-", input="not needed")
     assert code == 0 and out == "drop EN-002: cancelled — dependency\n"
     code, _, err = run("drop", "EN-2", "--message", "again")

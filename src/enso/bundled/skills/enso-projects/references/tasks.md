@@ -3,7 +3,10 @@
 A `[Task …]` block owns the run's scope, working directory, and available moves. On recovery,
 inspect its timeline and existing work before continuing.
 
-- `advance` submits completed stage work; `return` requests earlier-stage rework.
+- `advance --output-file PATH` submits the stage deliverable; text files or `.json` results
+  preserve the request it consumed. `return` uses the declared earlier destination.
+- `--route NAME` selects a declared choice at intake or a decision stage. Read available
+  choices and accepted input revisions from the Task block or `task show --json`.
 - `block` records what must change before progress; `--after REF` identifies a dependency.
 
 Advance/return submit a handoff; Enso moves the stage only after execution and checks pass.
@@ -34,10 +37,16 @@ When a person answers a task notice, find its task reference, act, and reply in 
 - Answers a blocked task's question: `enso task resume REF --message "<the answer>"`.
 - Approves edited tests: read the test diff in the worktree first, then `enso workflow
   approve-rules REF --message "<why it is sound>"`. A task blocked on it continues by itself.
-- QA passed: approve any edited tests first, then `enso task advance REF --message "QA passed"`.
+- QA passed: approve any edited tests first, then `enso task advance REF --message "QA passed" --approve DIGEST`, using the current input digest from `task show`.
 - QA found a problem: `enso task return REF --message "<what is wrong>"`.
 - Starts a parked task: `enso task advance REF --message "<the decision>"`.
 - Drops it: `enso task drop REF --message "<why>"`.
 
 For a `failure` block, read `enso task show REF` and `enso workflow show REF --json`, fix the
 cause, then resume; `enso workflow retry REF --message` restores an exhausted budget.
+
+Do not rewrite a request to publish a plan or draft. Submit an output revision instead.
+Correcting an input makes dependent evidence stale. An operator can use `workflow reroute`
+to revisit the first missing or stale stage; resume only returns to the interrupted stage.
+Legacy tasks are preserved and inactive. Never treat their old stages as newly accepted;
+explicit `workflow adopt` restarts them on the selected current path with history intact.

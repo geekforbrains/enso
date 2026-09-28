@@ -32,6 +32,8 @@ runs_app = typer.Typer(no_args_is_help=True, help="Job run history.")
 
 def _schedule(job: jobs.Job) -> str:
     """The cron line, or what fires a stage job without one."""
+    if job.stage and job.workflow != 2:
+        return f"legacy / paused ({job.project}/{job.stage})"
     if job.schedule is not None:
         return job.schedule
     return f"ready ({job.project}/{job.stage})"

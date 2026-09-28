@@ -28,6 +28,7 @@ FIELDS: dict[str, str] = {
     "command": TEXT,
     "project": TEXT,
     "stage": TEXT,
+    "workflow": INTEGER,
     "concurrency": "concurrency",
     "enabled": FLAG,
     "secrets": "names",
@@ -90,6 +91,7 @@ class Job:
     secrets: tuple[str, ...] = ()
     project: str | None = None
     stage: str | None = None
+    workflow: int = 2
     concurrency: JobConcurrency | None = None
     gate: JobHook | None = None
     postrun: JobHook | None = None
@@ -212,6 +214,7 @@ def parse_job(path: Path, config: Config | None = None) -> tuple[Job | None, lis
     if "secrets" in given:
         given["secrets"] = tuple(given["secrets"])
     given.setdefault("schedule", None)
+    given.setdefault("workflow", 1 if "stage" in given else 2)
     return Job(
         dir_name=path.parent.name, workspace=workspace, path=path, prompt=document.body, **given
     ), problems
@@ -510,7 +513,7 @@ def create_job(
             key: value for key, value in asdict(concurrency).items() if value is not None
         }
     if project is not None and stage is not None:
-        fields |= {"project": project, "stage": stage}
+        fields |= {"project": project, "stage": stage, "workflow": 2}
     fields["enabled"] = False
     job.job_dir.mkdir(parents=True)
     job.path.write_text(render(fields, prompt), "utf-8")

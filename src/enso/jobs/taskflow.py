@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import logging
 from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
@@ -102,7 +103,33 @@ def _prepare(
             env["ENSO_TASK_DIR"] = str(info.path)
             if info.dirty:
                 recovery = "uncommitted changes in " + ", ".join(info.dirty)
-    workflows.start(paths, config, task.ref, run_id)
+    transaction = workflows.start(paths, config, task.ref, run_id)
+    transaction["executor"] = {
+        "job": job.ref,
+        "workflow": job.workflow,
+        "agent": {
+            "provider": job.agent.provider,
+            "model": job.agent.model,
+            "effort": job.agent.effort,
+        }
+        if job.agent
+        else None,
+        "command": definition.command if definition else None,
+    }
+    transaction["instructions"] = {
+        "job": str(job.path),
+        "prompt": job.prompt,
+        "sha256": hashlib.sha256(job.path.read_bytes()).hexdigest(),
+        "project": instructions,
+        "stage": definition.instructions if definition else "",
+    }
+    transaction["skills"] = [
+        {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+        for root in (paths.home / "skills", paths.workspace(job.workspace) / "skills")
+        for path in sorted(root.glob("*/SKILL.md"))
+        if path.is_file()
+    ]
+    workflows._update(paths, transaction)
     ctx = tasks.context(paths, config, task.ref, env={"ENSO_RUN_ID": run_id, "ENSO_JOB": job.ref})
     parts = [
         tasks.render_task_block(
@@ -117,6 +144,8 @@ def _prepare(
     ]
     if instructions:
         parts.append(f"[Project instructions — {instructions[0]}]\n{instructions[1]}")
+    if definition and definition.instructions:
+        parts.append(definition.instructions)
     parts.append(job.prompt.replace("{{gate_output}}", gate_output))
     return StageRun(task, "\n\n".join(parts), env)
 
@@ -130,6 +159,8 @@ async def begin(
     actual setup worker stops before releasing ownership.
     """
     assert job.project is not None and job.stage is not None
+    if job.workflow != 2 or not config.projects[job.project].active:
+        raise tasks.TaskError("legacy or paused stage job cannot execute")
     if config.projects[job.project].workspace != job.workspace:
         raise tasks.TaskError("stage job and project must belong to the same workspace")
     task = await _reserve(paths, config, job, run_id)
@@ -161,7 +192,7 @@ async def begin(
             reason="deferred",
         )
         return StageRun(task, error=str(exc), deferred=True)
-    except (worktrees.WorktreeError, tasks.TaskError, OSError) as exc:
+    except (worktrees.WorktreeError, tasks.TaskError, ValueError, OSError) as exc:
         message = f"could not prepare {task.ref}: {exc}"
         log.warning("run=%s %s", run_id, message)
         await execution.run_sync(workflows.interrupt, paths, config, task.ref, run_id, message)

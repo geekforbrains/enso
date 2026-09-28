@@ -786,3 +786,47 @@ async def test_instructions_editor_without_javascript(browser, viewer, enso_home
     assert agents.read_text() == "Changed elsewhere.\n"
     assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
     await context.close()
+
+
+@pytest.mark.parametrize("width", [1280, 320])
+async def test_workflow_revisions_pending_decision_and_legacy_state(
+    browser, viewer, enso_home, project_config, width, tmp_path
+):
+    from conftest import edit_project
+
+    edit_project(
+        enso_home,
+        stages=[
+            "draft",
+            {"name": "approve", "human": True, "inputs": ["draft"], "return_to": "draft"},
+        ],
+    )
+    config = load_config(enso_home)
+    task = tasks.create(enso_home, config, "EN", "Campaign review", actor="user:test")
+    tasks.move(
+        enso_home,
+        config,
+        task.ref,
+        "advance",
+        actor="user:test",
+        run_id=None,
+        message="Draft complete",
+        output="<script>untrusted draft</script>",
+    )
+    context = await browser.new_context(
+        viewport={"width": width, "height": 900}, reduced_motion="reduce"
+    )
+    page = await context.new_page()
+    await page.goto(viewer + "tasks/" + task.ref)
+    await expect(page.get_by_role("heading", name="Accepted outputs and revisions")).to_be_visible()
+    await expect(page.get_by_text(re.compile("Approve the listed input revisions"))).to_be_visible()
+    await page.get_by_text("draft · revision 1 · current", exact=True).click()
+    await expect(page.get_by_text("<script>untrusted draft</script>", exact=True)).to_be_visible()
+    assert await page.evaluate("document.documentElement.scrollWidth <= innerWidth")
+    await page.screenshot(path=str(tmp_path / f"workflow-revisions-{width}.png"), full_page=True)
+    with db.transaction(enso_home) as con:
+        con.execute("UPDATE _enso_tasks SET workflow_version=1 WHERE ref=?", (task.ref,))
+    await page.reload()
+    await expect(page.get_by_text("legacy", exact=True)).to_be_visible()
+    await expect(page.get_by_text(re.compile("Workflow is preserved and paused"))).to_be_visible()
+    await context.close()

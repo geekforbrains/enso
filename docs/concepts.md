@@ -31,7 +31,7 @@ input, and preserves user data, but is not a sandbox. See
 | **Beat** | A future action or finite situation followed by Heartbeat |
 | **Run** | A recorded job or beat execution, including its outcome and output |
 | **Project** | A task pipeline owned by a workspace, optionally backed by Git |
-| **Task** | A unit of work with a spec, stage, and timeline |
+| **Task** | A request with a selected path, stage, accepted outputs, and timeline |
 | **Workflow transaction** | A submitted stage result and the evidence Enso needs to accept it |
 | **Skill** | Instructions an agent loads when relevant |
 | **Table** | A registered user SQLite table in `enso.db` |
@@ -158,9 +158,13 @@ The agent explicitly records resolution. See [Heartbeat](heartbeat.md).
 ## Project and task
 
 A workspace defines each project in `projects/<KEY>/PROJECT.md`. Its ordered stages can
-include agents, commands, human checkpoints, and explicit Git integration. A task has a
-spec, stage, and append-only timeline; built-in holding and terminal stages are `backlog`,
+include agents, commands, human checkpoints, and explicit Git integration. A task retains its original request, selected path, accepted output revisions, decisions,
+stage, and append-only timeline; built-in holding and terminal stages are `backlog`,
 `blocked`, `done`, and `cancelled`.
+
+Each stage declares inputs, instructions, an expected output and acceptance checks. Named
+ordered paths select applicable stages. Agents, commands and people can make configured
+routing decisions; skipped stages produce no execution or completion evidence.
 
 An agent submits a handoff. Enso retains ownership until execution stops and any required
 checks pass against the submitted candidate. It then accepts the transition and records
@@ -269,11 +273,11 @@ to carry out instructions embedded in names or messages.
 
 1. Enso claims a ready task within project concurrency limits and prepares its execution
    directory or worktree.
-2. It records the task spec, workflow, and starting candidate in a transaction, then runs
+2. It records the request and accepted input revisions, workflow, instructions and starting candidate, then runs
    the stage. Agent stages receive a [Task block](tasks.md#the-task-block).
 3. A handoff is submitted; after writers stop, Enso runs required checks and bounded repairs.
    An integration stage also serializes landing into the recorded repository target.
-4. Enso accepts the transition with evidence and queues lifecycle events. Finished worktrees
+4. Enso atomically accepts the output revision, routing decision, transition and lifecycle events. Finished worktrees
    become cleanup candidates after their users finish; dirty or unmerged work is preserved.
 5. Work that is not accepted blocks the task with its cause. The project's `after:blocked`
    hook, or a short [job alert](jobs.md#alerts) when it has none, tells a person.
