@@ -1,4 +1,4 @@
-"""The web viewer's plumbing: config, the read-only database, the process, and the rules.
+"""The web viewer's plumbing: config, database presentation, process, and rules.
 
 Page content is in ``test_web_pages.py`` and ``test_web_tasks.py``. Everything here runs
 against a scratch home; process tests spawn the real ``python -m enso.web`` on a free port
@@ -130,14 +130,10 @@ def test_bind_urls_and_loopback() -> None:
     assert web.Bind("0.0.0.0", 5).connect_address() == ("127.0.0.1", 5)
 
 
-# -- The read-only database -----------------------------------------------------
+# -- Database presentation ------------------------------------------------------
 
 
-def test_reader_is_strictly_read_only(enso_home: Paths, config: Config) -> None:
-    elsewhere = Paths(enso_home.home / "never")
-    with pytest.raises(db.MissingDatabaseError), db.reader(elsewhere):
-        pass
-    assert not elsewhere.home.exists()  # never creates the home or the file
+def test_run_summaries_handle_missing_or_unreadable_database(enso_home: Paths) -> None:
     assert not enso_home.db.exists()
     assert runs.list_summaries(enso_home) == [] and runs.count(enso_home) == 0
     assert runs.latest_summaries(enso_home) == {} and runs.job_names(enso_home) == []
@@ -145,22 +141,10 @@ def test_reader_is_strictly_read_only(enso_home: Paths, config: Config) -> None:
     assert not enso_home.db.exists()
 
     db.initialize(enso_home)
-    with db.reader(enso_home) as con:
-        assert con.execute("PRAGMA query_only").fetchone()[0] == 1
-        assert con.execute("PRAGMA user_version").fetchone()[0] == db.SCHEMA_VERSION
-    with pytest.raises(db.UnreadableDatabaseError, match="readonly"), db.reader(enso_home) as con:
-        con.execute("INSERT INTO job_state (job) VALUES ('x')")
-    with pytest.raises(db.UnreadableDatabaseError, match="readonly"), db.reader(enso_home) as con:
-        con.execute("PRAGMA user_version = 1")
     assert db.job_states(enso_home) == {}
 
     with db.transaction(enso_home) as con:  # a newer Enso wrote this file
         con.execute("PRAGMA user_version = 99")
-    with (
-        pytest.raises(db.UnreadableDatabaseError, match="schema version 99"),
-        db.reader(enso_home),
-    ):
-        pass
     with pytest.raises(db.UnreadableDatabaseError):
         runs.count(enso_home)
 

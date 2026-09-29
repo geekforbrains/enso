@@ -399,7 +399,13 @@ def bindings() -> dict[str, dict[str, Any]]:
     database = HOME / "enso.db"
     if not database.exists():
         return {}
-    with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as connection:
+    # Keep the standalone Python 3.9+ script's reader in step with enso.db.read_connect.
+    # SQLite may need to recreate WAL sidecars even though our queries change no data.
+    with closing(
+        sqlite3.connect(database.as_uri() + "?mode=rw", uri=True, timeout=30, isolation_level=None)
+    ) as connection:
+        connection.execute("PRAGMA busy_timeout=30000")
+        connection.execute("PRAGMA query_only=ON")
         rows = connection.execute(
             "SELECT conversation, provider, session_id, workspace, last_active FROM sessions"
         ).fetchall()

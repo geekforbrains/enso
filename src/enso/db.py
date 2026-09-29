@@ -1,15 +1,15 @@
 """SQLite state store: short-lived WAL connections and one fresh, identified schema.
 
 Two ways in. ``connect``/``transaction`` create the home and the database, set WAL mode, and are
-what every write path uses; ``connect`` is the only place a writable handle is opened and
-``transaction`` is its only production caller, so the forward-version guard it performs
-cannot be walked around by another call site. Every ``transaction`` begins IMMEDIATE, read-only
-helpers included, so the write lock is held for its whole body: a deferred transaction that
-reads and then writes has to upgrade a snapshot another writer may have moved on from, which
-under WAL fails at once with ``SQLITE_BUSY`` and never waits on the busy timeout. Enso has one
+what every application write path uses. ``transaction`` is ``connect``'s only production caller,
+so ordinary writes cannot bypass its forward-version guard. Every ``transaction`` begins
+IMMEDIATE, read-only helpers included, so the write lock is held for its whole body. A deferred
+transaction that reads before writing may need to upgrade a stale snapshot. Under WAL, that
+fails at once with ``SQLITE_BUSY`` and never waits on the busy timeout. Enso has one
 writer and its transactions last microseconds, so serialising them costs nothing worth
-measuring. ``reader`` opens the file read-only (SQLite's ``mode=ro`` plus ``PRAGMA query_only``)
-and never creates or migrates anything. Ordinary browsing uses this route; secret-store
+measuring. ``reader`` opens the existing database in ``mode=rw`` with ``PRAGMA query_only``:
+application queries cannot change data or schema, while SQLite can maintain WAL sidecars.
+It never creates or migrates the database. Ordinary browsing uses this route; secret-store
 operations use transactions. A WAL reader never blocks ``enso serve``.
 """
 
@@ -320,28 +320,32 @@ def transaction(paths: Paths) -> Iterator[sqlite3.Connection]:
 
 
 def read_connect(paths: Paths) -> sqlite3.Connection:
-    """A read-only connection to an existing ``enso.db``; never creates, migrates, or writes.
+    """A query-only connection to an existing ``enso.db``; never creates or migrates it.
 
-    ``mode=ro`` refuses writes at the file level and ``query_only`` at the statement level,
-    so even a bug in a caller cannot change anything. The busy timeout is kept so a reader
-    waits for a checkpoint instead of failing.
+    ``mode=rw`` lets SQLite recreate missing WAL sidecars. ``query_only`` rejects ordinary
+    data and schema writes by callers, but is not a file-level read-only guarantee. The busy
+    timeout lets a reader wait for a checkpoint instead of failing.
     """
     if not paths.db.is_file():
         raise MissingDatabaseError(f"{paths.db} does not exist")
-    uri = f"file:{quote(str(paths.db))}?mode=ro"
+    uri = f"file:{quote(str(paths.db))}?mode=rw"
+    con: sqlite3.Connection | None = None
     try:
         con = sqlite3.connect(uri, uri=True, timeout=30, isolation_level=None)
         con.row_factory = sqlite3.Row
         con.execute("PRAGMA busy_timeout=30000")
         con.execute("PRAGMA query_only=ON")
     except sqlite3.Error as exc:
+        if con is not None:
+            con.close()
         raise UnreadableDatabaseError(f"could not open {paths.db}: {exc}") from exc
+    assert con is not None
     return con
 
 
 @contextmanager
 def reader(paths: Paths) -> Iterator[sqlite3.Connection]:
-    """One short-lived read-only connection to a database at a schema this Enso knows.
+    """One short-lived query-only connection to a database at a schema this Enso knows.
 
     Raises ``MissingDatabaseError`` when the file is absent or was never initialized (nothing has
     happened yet) and ``UnreadableDatabaseError`` when it cannot be read or was written by a

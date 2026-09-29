@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from contextlib import closing
 from typing import Any
 
 import pytest
@@ -10,6 +11,61 @@ from conftest import session_for
 
 from enso import db
 from enso.config import Paths
+
+
+def _without_wal_sidecars(paths: Paths) -> None:
+    """Checkpoint a closed WAL database, then model a writer that removes its sidecars."""
+    with closing(sqlite3.connect(paths.db, isolation_level=None)) as con:
+        assert con.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+        assert con.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    for suffix in ("-wal", "-shm"):
+        sidecar = paths.db.with_name(paths.db.name + suffix)
+        sidecar.unlink(missing_ok=True)
+        assert not sidecar.exists()
+
+
+def test_query_only_readers_recreate_missing_wal_sidecars(enso_home: Paths) -> None:
+    db.initialize(enso_home)
+    with db.transaction(enso_home) as con:
+        con.execute("CREATE TABLE reader_probe (value INTEGER)")
+        con.execute("INSERT INTO reader_probe VALUES (1)")
+    _without_wal_sidecars(enso_home)
+
+    with closing(db.read_connect(enso_home)) as con:
+        assert con.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert con.execute("SELECT value FROM reader_probe").fetchone()[0] == 1
+        assert all(
+            enso_home.db.with_name(enso_home.db.name + suffix).exists()
+            for suffix in ("-wal", "-shm")
+        )
+        for statement in (
+            "INSERT INTO reader_probe VALUES (2)",
+            "UPDATE reader_probe SET value = 2",
+            "DELETE FROM reader_probe",
+            "CREATE TABLE reader_probe_other (value INTEGER)",
+        ):
+            with pytest.raises(sqlite3.OperationalError) as error:
+                con.execute(statement)
+            assert error.value.sqlite_errorcode & 0xFF == sqlite3.SQLITE_READONLY
+
+    _without_wal_sidecars(enso_home)
+    with db.reader(enso_home) as con:
+        assert con.execute("PRAGMA query_only").fetchone()[0] == 1
+        assert con.execute("SELECT value FROM reader_probe").fetchone()[0] == 1
+        assert all(
+            enso_home.db.with_name(enso_home.db.name + suffix).exists()
+            for suffix in ("-wal", "-shm")
+        )
+    with pytest.raises(db.UnreadableDatabaseError, match="readonly"), db.reader(enso_home) as con:
+        con.execute("DELETE FROM reader_probe")
+
+
+def test_query_only_readers_do_not_create_missing_database(enso_home: Paths) -> None:
+    with pytest.raises(db.MissingDatabaseError):
+        db.read_connect(enso_home)
+    with pytest.raises(db.MissingDatabaseError), db.reader(enso_home):
+        pass
+    assert not enso_home.db.exists()
 
 
 def test_sessions_round_trip_and_prune(enso_home: Paths) -> None:

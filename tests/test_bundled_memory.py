@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
 import json
 import os
+import sqlite3
 import subprocess
 import sys
+from contextlib import closing
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import ModuleType
@@ -128,6 +131,21 @@ def test_upgrades_install_the_job_in_an_existing_home(enso_home, config, monkeyp
     assert workspaces.reconcile_bundles(enso_home, config.defaults) == []
 
 
+def test_bundle_update_replaces_an_untouched_memory_script(enso_home, config):
+    workspaces.seed_jobs(enso_home, config.defaults)
+    relative = "workspaces/default/jobs/enso-memory/memory.py"
+    installed = enso_home.home / relative
+    previous = installed.read_bytes() + b"\n# Previous bundled revision.\n"
+    installed.write_bytes(previous)
+    receipts = enso_home.home / ".bundles.json"
+    state = json.loads(receipts.read_text())
+    state["files"][relative] = hashlib.sha256(previous).hexdigest()
+    receipts.write_text(json.dumps(state))
+
+    assert relative in workspaces.reconcile_bundles(enso_home, config.defaults)
+    assert installed.read_bytes() == (JOB / "memory.py").read_bytes()
+
+
 def test_chat_markers_match_the_prompts_enso_writes():
     assert memory.ORIGIN == ORIGIN_HEADER
     assert HEADER.startswith(memory.BACKGROUND)
@@ -216,6 +234,20 @@ def chat_home(enso_home, fake_config, tmp_path, monkeypatch):
     history.parent.mkdir(parents=True)
     history.write_text("".join(json.dumps(r) + "\n" for r in turn))
     return at
+
+
+def test_installed_memory_gate_reads_without_wal_sidecars(enso_home, fake_config, chat_home):
+    with closing(sqlite3.connect(enso_home.db, isolation_level=None)) as connection:
+        assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    for suffix in ("-wal", "-shm"):
+        sidecar = enso_home.db.with_name(enso_home.db.name + suffix)
+        sidecar.unlink(missing_ok=True)
+        assert not sidecar.exists()
+
+    job_dir = enso_home.workspace_jobs("default") / "enso-memory"
+    preview = run_hook("gate", {**os.environ, "JOB_DIR": job_dir})
+    assert preview.returncode == 0, preview.stderr
+    assert json.loads(preview.stdout)["records"][0]["user"] == "Move the Apollo launch to Friday."
 
 
 async def test_job_publishes_a_corrected_review_once(

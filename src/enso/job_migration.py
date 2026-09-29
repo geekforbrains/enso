@@ -15,7 +15,7 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import frontmatter, update_snapshot
+from . import db, frontmatter, update_snapshot
 from .config import Paths, valid_workspace_name
 from .maintenance import UpdateError, read_json, write_bytes, write_json
 
@@ -228,7 +228,7 @@ def _database_version(paths: Paths) -> int | None:
     if not paths.db.exists():
         return None
     update_snapshot.plan(paths, ["enso.db"])
-    with closing(sqlite3.connect(f"{paths.db.as_uri()}?mode=ro", uri=True)) as connection:
+    with closing(db.read_connect(paths)) as connection:
         application = connection.execute("PRAGMA application_id").fetchone()[0]
         version = connection.execute("PRAGMA user_version").fetchone()[0]
         if application != 0x454E534F or version not in (1, 2, 3, 4):

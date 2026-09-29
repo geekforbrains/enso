@@ -20,10 +20,11 @@ enso web uninstall                 # stop and remove automatic startup
 ```
 
 The viewer runs separately from `enso serve`, reading files and `enso.db` even when the
-agent service is stopped. Browsing opens the database read-only. Writes respect maintenance
-admission, and secret and pin operations use short transactions. Without the optional
-dependencies, `status`, `stop`, and `uninstall` still work; `start` and `install` explain the
-missing extra.
+agent service is stopped. Browsing uses query-only connections to the existing database;
+SQLite may create WAL sidecars while these queries run. Data and schema changes are rejected
+on those connections. Writes respect maintenance admission, and secret and pin operations
+use short transactions. Without the optional dependencies, `status`, `stop`, and `uninstall`
+still work; `start` and `install` explain the missing extra.
 
 Standalone `start` logs to `~/.enso/web.log`. `install` adds a launchd/systemd user service
 that logs to `~/.enso/launchd-web.log` and restarts after crashes and user logins.

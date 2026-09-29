@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+from contextlib import closing
 from pathlib import Path
 
 import pytest
@@ -458,6 +459,18 @@ def old_job_database(paths):
             + OLD_RUNS
         )
         connection.execute("PRAGMA user_version = 3")
+
+
+def test_job_migration_reads_version_without_wal_sidecars(enso_home):
+    old_job_database(enso_home)
+    with closing(sqlite3.connect(enso_home.db, isolation_level=None)) as connection:
+        assert connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()[0] == 0
+    for suffix in ("-wal", "-shm"):
+        sidecar = enso_home.db.with_name(enso_home.db.name + suffix)
+        sidecar.unlink(missing_ok=True)
+        assert not sidecar.exists()
+
+    assert job_migration._database_version(enso_home) == 3
 
 
 @pytest.fixture

@@ -60,6 +60,12 @@ All notable changes to Enso are documented here, following
 - `enso project add --flow` and its `support` and `marketing` stage lists. `--stages`
   defaults to one `work` stage, and `enso workflow init --preset` is the only preset.
 
+### Fixed
+
+- Database readers can recreate missing SQLite WAL sidecars after another process closes
+  the last writer, avoiding transient read failures in the viewer, schedulers, and bundled
+  memory job while keeping application reads query-only.
+
 ## [0.4.1] - 2026-09-23
 
 ### Added
