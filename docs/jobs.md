@@ -46,7 +46,7 @@ agent:
   effort: high                # required within agent
   max_followups: 2            # optional, default 2; 0 disables postrun-requested turns
 project: EN                   # optional, with stage: the project this job serves
-stage: todo                   # optional, with project: one of its agent stages
+stage: build                  # optional, with project: one of its agent stages
 workflow: 2                   # required to activate a stage job under the current engine
 concurrency:                 # optional: shared execution and postrun protection
   group: meteor              # required within concurrency
@@ -209,15 +209,17 @@ A stage job serves one executable stage of a [project](tasks.md#projects-and-sta
 `project` and `stage` bind it, and `workflow: 2` opts it into the current engine.
 The project owns inputs, outputs and responsibilities; the job owns its explicit agent
 triple, executor instructions, runtime timeout and scheduling. Legacy stage jobs remain
-inspectable but cannot execute, including through manual runs. `enso job create --project KEY --stage NAME` scaffolds one, and
-with those two flags `--schedule` is optional.
+inspectable but cannot execute, including through manual runs.
+`enso job create --project KEY --stage NAME` scaffolds one; with those two flags,
+`--schedule` is optional.
 
 ```bash
-enso job create --name "Enso todo" --provider claude --model opus --effort high \
-  --workspace dev --project EN --stage todo
+enso job create --name "Enso build" --provider claude --model opus --effort high \
+  --workspace dev --project EN --stage build
 ```
 
-An enabled, valid current-engine stage job in an active project is checked each minute unless already running:
+An enabled, valid current-engine stage job in an active project is checked each minute
+unless already running:
 
 | `schedule` | Trigger |
 | --- | --- |
@@ -227,7 +229,7 @@ An enabled, valid current-engine stage job in an active project is checked each 
 Idle polling creates no run row. A race where another run takes the waiting task can
 produce `no_work`. Manual runs always record a result, including `no_work` when idle;
 when a task is claimed, text output prints its reference and JSON returns it as `task`.
-`job list` shows `ready (EN/todo)` for an unscheduled stage job; it has no `next_run`.
+`job list` shows `ready (EN/build)` for an unscheduled stage job; it has no `next_run`.
 
 When it fires, Enso claims the ready task with the highest priority for that run, prepares
 a worktree when that stage needs one, writes the [Task block](tasks.md#the-task-block) and the

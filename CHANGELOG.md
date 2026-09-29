@@ -5,60 +5,46 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+### Added
+
+- Workflows can declare named paths, stage inputs, and versioned outputs. Agents, commands,
+  and people can make permitted routing decisions; rerouting revisits missing or stale work.
+  Human approval binds to the exact inputs and, for repository work, the candidate commit.
+  The CLI, agent Task block, and viewer show the same contract and accepted results.
+
 ### Changed
 
-- Workflows use declared ordered paths, explicit stage inputs and versioned accepted outputs.
-  Human decisions bind to input revisions; rerouting revisits missing work and revisions
-  invalidate affected evidence. CLI, agent context and viewer expose the same contracts.
-- Existing workflows, stage jobs and tasks are preserved as inactive legacy material.
-  Replacement and adoption are explicit; standalone jobs remain usable. Interrupted
-  lifecycle deliveries require a recorded receipt or retry decision.
-- The task timeline reads oldest first as stage visits. Each visit's header names the stage,
-  its duration, and the job and model that worked it. Every event is one row with an icon
-  for who acted (person, agent, Enso, or script) and a plain verb; the source column names
-  only people, commands, and other jobs, with Slack and Telegram senders shown by name.
-  A handoff is one row with its checks, repairs, landing, and Enso's decision beneath it,
-  and lifecycle hooks appear where they fired. Rows fold long messages to a preview;
-  opening one shows the message as Markdown, the recorded actor, and its run. The task
-  page's handoff message is also rendered as Markdown.
-- The task page's Workflow history and Lifecycle scripts sections are gone; the timeline
-  holds their evidence. A check step opens to its complete output, exit code, and attempt,
-  and a handoff row opens to why Enso stopped it and an evidence line with its repairs,
-  spec and workflow versions, and transaction. Checks not yet run and landings that were
-  not accepted appear as steps. **View evidence** opens the latest handoff.
-- Task events record more for the timeline: a chat sender's name, the claiming run's kind
-  and model, and a move's transaction. `enso workflow verify` records the operator who ran
-  it instead of `user:verify`.
-- A stage run that blocks its task no longer sends the agent's full reply as a job error
-  alert. When the project defines `hooks["after:blocked"]`, that hook is the only notice;
-  otherwise the runner sends one `⚠️ [workspace:job] REF blocked` line with the cause.
-  This covers agent blocks, refused handoffs, and provider, postrun, or preparation failures.
-  Gate and secrets failures, and runs that could not settle their task, alert as before.
-  Run statuses are unchanged.
-- `enso workflow init --preset dev` now sets up `build → review → qa → merge`. A second
-  configured provider reviews what the first built, a person tries each task's worktree in
-  the human `qa` stage, and Enso merges it. Optional preparation and decision stages are
-  declared in project paths. Prompts ask for short handoffs, and a generated `notify.sh` hook
-  sends one line when a task is blocked or ready for QA. New definitions and jobs start
-  paused for review and explicit activation.
+- **Breaking:** Home revision 9 preserves existing workflows, stage jobs, and tasks as
+  inactive legacy material; their stage automation stops after upgrade. To resume it,
+  define `workflow: 2` stages and jobs, enable the workflow and intended jobs, then adopt
+  or recreate outstanding tasks. Standalone jobs keep running. Follow the
+  [manual replacement steps](docs/migration.md#legacy-workflows-and-manual-replacement).
+- `enso workflow init --preset dev` now creates `build → review → qa → merge`: a separate
+  review job uses another configured provider when available, a person tests the task
+  worktree in QA, and Enso merges locally. Generated definitions and jobs start paused;
+  a generated hook sends a notice for blocked tasks and tasks ready for QA.
+- The task page shows an oldest-first timeline grouped by stage visit. Rows identify the
+  actor and fold messages into Markdown previews; handoffs open to show checks, repairs,
+  landing, and acceptance evidence. Lifecycle deliveries appear where they happened,
+  replacing the separate Workflow history and Lifecycle scripts sections.
 - Task worktrees default to `.worktrees/<REF>` beside the project's `PROJECT.md` instead of
-  inside the repository, and stay out of `git status` of an Enso home kept in Git. Existing
-  tasks and an explicit `worktree_root` are unaffected. Backups of the home should skip
-  `.worktrees/`.
-- Edited tests or check files are checked once where a project lands work, at its
-  integration stage, counting only the task's own changes against the target; approving
-  before then, such as during QA, lets it land without stopping. A project without an
-  integration stage still checks at each checked stage. `enso workflow approve-rules` on a
-  task blocked on this now continues its handoff directly, keeping the original handoff for
-  the next stage, instead of needing `resume` and `verify` afterwards.
-- Every block records its kind: `decision`, `approval`, or `failure`. Lifecycle hooks
-  receive it as `ENSO_BLOCK_KIND`, with the move's `ENSO_MESSAGE` and `ENSO_TASK_TITLE`, and
-  no longer inherit the chat turn or job that happened to deliver them.
+  inside the repository. Existing task paths and explicit `worktree_root` settings are
+  unchanged; home backups should skip `.worktrees/`.
+- For projects with an integration stage, edits to existing tests or check files require
+  approval when work lands. `enso workflow approve-rules` can continue a handoff blocked
+  on those edits without a separate resume and verify. Projects without integration still
+  check at each checked stage.
+- When a stage run blocks its task, `hooks["after:blocked"]` owns the notice if configured;
+  otherwise the runner sends one short alert with the cause, without the agent's reply.
+  Lifecycle hooks receive the handoff or block reason, block kind, and task title.
+- In current workflows, an interrupted lifecycle delivery waits for an operator to record
+  a receipt or authorize a retry; Enso does not replay an uncertain external effect.
 
 ### Removed
 
-- `enso project add --flow` and its `support` and `marketing` stage lists. `--stages`
-  defaults to one `work` stage, and `enso workflow init --preset` is the only preset.
+- **Breaking:** `enso project add --flow` and its `support` and `marketing` stage lists.
+  `--stages` defaults to one `work` stage, and `enso workflow init --preset` is the only
+  preset.
 
 ### Fixed
 

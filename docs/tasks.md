@@ -145,10 +145,12 @@ verify`, command stages use their job, and integration uses its configured engin
 `--force` cannot bypass acceptance or a live claim. Blocking and cancellation do not require
 passing checks. Runs cannot move human stages, drop tasks or resume blocked work.
 
-A human stage requires `--approve DIGEST`, using the current approval value from `task show`.
+A human stage's `advance` requires `--approve DIGEST`, using the current approval value from
+`task show`.
 The digest identifies the exact input revisions, stage instructions and acceptance rules,
-and, for repository work, the committed candidate. Supply the decision reason with `--message`. Revision changes require a fresh
-decision. Returning with feedback declines approval and revisits the declared producing stage.
+and, for repository work, the committed candidate. Supply the decision reason with
+`--message`. Revision changes require a fresh decision. Returning with feedback declines
+approval and revisits the declared producing stage.
 
 Tasks blocked on a completed dependency resume to their interrupted stage through the same
 rules. Cancellation leaves dependants blocked and flagged for attention. Legacy/paused tasks
@@ -332,7 +334,7 @@ build (agent) → review (a second agent) → qa (a person) → merge (Enso) →
 | `review` | Reads the diff against the task and repository rules. Returns to build at most once, or hands the person short "Changed / Try it" steps |
 | `qa` | A person tries the task's worktree, approves any edited tests, then advances to merge or returns to build with what's wrong |
 | `merge` | Enso rebases onto the target, reruns the checks, and fast-forwards the target; no model |
-| `done` | Accepted and merged locally; the worktree is cleaned up |
+| `done` | Accepted and merged locally; a clean, no longer needed worktree is eligible for cleanup |
 
 Only ready work belongs in `build`. Keep tasks that still need a decision in `backlog` and
 advance them once settled, rather than paying an agent to discover the question. The review

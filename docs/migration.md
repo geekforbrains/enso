@@ -159,7 +159,8 @@ To replace a workflow deliberately:
    authoring; Enso has no translator or compatibility execution engine.
 3. Review or recreate each stage job with `workflow: 2`, initially disabled. Validate with
    `enso config check` and `enso job show NAME --json`. Old jobs remain inactive.
-4. Run `enso workflow enable KEY --workspace W`, then explicitly enable the intended jobs.
+4. Run `enso workflow enable KEY --workspace W`, then set `enabled: true` in each intended
+   stage job's `JOB.md` and run `enso config check` again.
 5. For outstanding work, use `enso workflow adopt REF --route NAME --message REASON` to
    restart the same identity at the new path's beginning. It retains history and artifacts,
    but grants no new acceptance to old stages. Alternatively create a task with `--from REF`.
