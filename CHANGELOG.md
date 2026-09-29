@@ -5,6 +5,8 @@ All notable changes to Enso are documented here, following
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 ### Added
 
 - Workflows can declare named paths, stage inputs, and versioned outputs. Agents, commands,
